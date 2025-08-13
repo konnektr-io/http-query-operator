@@ -459,11 +459,159 @@ data:
 			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 		})
 
-		// TODO: Placeholder for JSON path test
-		XIt("should extract data from nested JSON responses using JSONPath", func() {
-			// This test will verify:
-			// - ResponsePath correctly extracts nested arrays/objects
-			// - Works with complex JSON structures like {"data": {"users": [...]}}
+		It("should extract data from nested JSON responses using JSONPath", func() {
+			ctx := context.Background()
+
+			// Create a mock HTTP server with nested JSON structure
+			mockServer := NewMockHTTPServer()
+			defer mockServer.Close()
+
+			// Set up response with nested data structure
+			nestedResponse := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body: `{
+					"status": "success",
+					"metadata": {
+						"total": 3,
+						"page": 1
+					},
+					"data": {
+						"users": [
+							{
+								"id": 10,
+								"profile": {
+									"username": "nested-alice",
+									"contact": {
+										"email": "alice@nested.com"
+									}
+								},
+								"settings": {
+									"theme": "dark",
+									"notifications": true
+								}
+							},
+							{
+								"id": 20,
+								"profile": {
+									"username": "nested-bob", 
+									"contact": {
+										"email": "bob@nested.com"
+									}
+								},
+								"settings": {
+									"theme": "light",
+									"notifications": false
+								}
+							},
+							{
+								"id": 30,
+								"profile": {
+									"username": "nested-charlie",
+									"contact": {
+										"email": "charlie@nested.com"
+									}
+								},
+								"settings": {
+									"theme": "auto",
+									"notifications": true
+								}
+							}
+						]
+					}
+				}`,
+			}
+			mockServer.SetResponse("/api/nested", nestedResponse)
+
+			// Create the HTTPQueryResource with JSONPath to extract nested array
+			hqr := &httpv1alpha1.HTTPQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "jsonpath-hqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					HTTP: httpv1alpha1.HTTPSpec{
+						URL:    mockServer.URL() + "/api/nested",
+						Method: "GET",
+						Headers: map[string]string{
+							"Accept": "application/json",
+						},
+						ResponsePath: "$.data.users[*]", // Extract the users array from nested structure
+					},
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: nested-user-{{ .Item.id }}
+  namespace: default
+  labels:
+    theme: {{ .Item.settings.theme }}
+    notifications: "{{ .Item.settings.notifications }}"
+data:
+  user-id: "{{ .Item.id }}"
+  username: "{{ .Item.profile.username }}"
+  email: "{{ .Item.profile.contact.email }}"
+  theme: "{{ .Item.settings.theme }}"
+  notifications: "{{ .Item.settings.notifications }}"
+  full-profile: {{ .Item | toJson }}`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+			// Wait for all ConfigMaps to be created from the nested data
+			expectedUsers := []struct {
+				id       int
+				username string
+				email    string
+				theme    string
+				notify   bool
+			}{
+				{10, "nested-alice", "alice@nested.com", "dark", true},
+				{20, "nested-bob", "bob@nested.com", "light", false},
+				{30, "nested-charlie", "charlie@nested.com", "auto", true},
+			}
+
+			for _, user := range expectedUsers {
+				cmName := "nested-user-" + toString(user.id)
+				cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+				createdCM := &corev1.ConfigMap{}
+				Eventually(func(g Gomega) {
+					g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+					
+					// Verify labels from nested data
+					labels := createdCM.GetLabels()
+					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, ControllerName))
+					g.Expect(labels).To(HaveKeyWithValue("theme", user.theme))
+					g.Expect(labels).To(HaveKeyWithValue("notifications", toString(user.notify)))
+					
+					// Verify data extracted from deeply nested fields
+					g.Expect(createdCM.Data).To(HaveKeyWithValue("user-id", toString(user.id)))
+					g.Expect(createdCM.Data).To(HaveKeyWithValue("username", user.username))
+					g.Expect(createdCM.Data).To(HaveKeyWithValue("email", user.email))
+					g.Expect(createdCM.Data).To(HaveKeyWithValue("theme", user.theme))
+					g.Expect(createdCM.Data).To(HaveKeyWithValue("notifications", toString(user.notify)))
+					
+					// Verify the full profile JSON is stored correctly
+					g.Expect(createdCM.Data).To(HaveKey("full-profile"))
+					var fullProfile map[string]interface{}
+					g.Expect(json.Unmarshal([]byte(createdCM.Data["full-profile"]), &fullProfile)).To(Succeed())
+					g.Expect(fullProfile).To(HaveKeyWithValue("id", float64(user.id))) // JSON numbers become float64
+					g.Expect(fullProfile).To(HaveKey("profile"))
+					g.Expect(fullProfile).To(HaveKey("settings"))
+				}, timeout, interval).Should(Succeed())
+			}
+
+			// Verify that exactly 3 ConfigMaps were created (one for each user in the nested array)
+			Eventually(func(g Gomega) {
+				lookupKey := types.NamespacedName{Name: "jsonpath-hqr", Namespace: ResourceNamespace}
+				created := &httpv1alpha1.HTTPQueryResource{}
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				g.Expect(created.Status.ManagedResources).To(HaveLen(3))
+			}, timeout, interval).Should(Succeed())
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 		})
 
 		// TODO: Placeholder for error handling test
