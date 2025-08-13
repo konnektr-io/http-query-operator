@@ -1,0 +1,204 @@
+# Complete Working Example - Ready for Testing
+# This sample demonstrates all major features and should work once the controller is fully implemented
+
+---
+# Secret for demonstration (using httpbin.org which echoes requests)
+apiVersion: v1
+kind: Secret
+metadata:
+  name: demo-auth
+  namespace: default
+type: Opaque
+stringData:
+  # These are demo values - httpbin.org will echo whatever you send
+  token: "demo-bearer-token-12345"
+  apikey: "demo-api-key-abcdef"
+
+---
+# Main HTTPQueryResource with all features
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: complete-demo
+  namespace: default
+  finalizers:
+    - konnektr.io/httpqueryresource-finalizer
+spec:
+  # Poll every 2 minutes for testing
+  pollInterval: "2m"
+  
+  # Enable pruning - remove resources when they disappear from API
+  prune: true
+  
+  # HTTP configuration
+  http:
+    # Using JSONPlaceholder - free testing API
+    url: "https://jsonplaceholder.typicode.com/users"
+    method: GET
+    headers:
+      Accept: "application/json"
+      User-Agent: "http-query-operator/1.0"
+      X-Source: "kubernetes-operator"
+    
+    # Uncomment to test bearer authentication
+    # authenticationRef:
+    #   name: demo-auth
+    #   type: bearer
+    #   tokenKey: token
+    
+    # Response is an array at root level
+    responsePath: "$"
+  
+  # Template creates a Deployment for each user
+  template: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: user-app-{{ .Item.id }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/name: user-app
+        app.kubernetes.io/managed-by: http-query-operator
+        app.kubernetes.io/instance: user-app-{{ .Item.id }}
+        user.id: "{{ .Item.id }}"
+        user.username: "{{ .Item.username }}"
+        source: jsonplaceholder
+      annotations:
+        httpqueryresource.konnektr.io/source-url: "https://jsonplaceholder.typicode.com/users"
+        httpqueryresource.konnektr.io/user-email: "{{ .Item.email }}"
+        httpqueryresource.konnektr.io/last-sync: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: user-app-{{ .Item.id }}
+      template:
+        metadata:
+          labels:
+            app: user-app-{{ .Item.id }}
+            user.id: "{{ .Item.id }}"
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.21-alpine
+            ports:
+            - containerPort: 80
+              name: http
+            env:
+            - name: USER_ID
+              value: "{{ .Item.id }}"
+            - name: USER_NAME
+              value: "{{ .Item.name }}"
+            - name: USER_EMAIL
+              value: "{{ .Item.email }}"
+            - name: USER_COMPANY
+              value: "{{ .Item.company.name }}"
+            resources:
+              requests:
+                memory: "64Mi"
+                cpu: "100m"
+              limits:
+                memory: "128Mi"
+                cpu: "200m"
+            readinessProbe:
+              httpGet:
+                path: /
+                port: 80
+              initialDelaySeconds: 5
+              periodSeconds: 10
+            livenessProbe:
+              httpGet:
+                path: /
+                port: 80
+              initialDelaySeconds: 15
+              periodSeconds: 20
+  
+  # Status update configuration
+  statusUpdate:
+    # Using httpbin.org for testing - it echoes back what you send
+    url: "https://httpbin.org/post"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+      X-Source: "http-query-operator"
+    
+    # Uncomment to test API key authentication for status updates
+    # authenticationRef:
+    #   name: demo-auth
+    #   type: apikey
+    #   apikeyKey: apikey
+    #   apikeyHeader: "X-API-Key"
+    
+    # Template for status update body
+    bodyTemplate: |
+      {
+        "event": "deployment_status_update",
+        "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}",
+        "operator": "http-query-operator",
+        "resource": {
+          "name": "{{ .Resource.metadata.name }}",
+          "namespace": "{{ .Resource.metadata.namespace }}",
+          "kind": "{{ .Resource.kind }}",
+          "user_id": "{{ .Resource.metadata.labels.user.id }}",
+          "user_username": "{{ .Resource.metadata.labels.user.username }}"
+        },
+        "status": {
+          "desired_replicas": {{ .Resource.spec.replicas | default 0 }},
+          "available_replicas": {{ .Resource.status.availableReplicas | default 0 }},
+          "ready_replicas": {{ .Resource.status.readyReplicas | default 0 }},
+          "updated_replicas": {{ .Resource.status.updatedReplicas | default 0 }},
+          "conditions": [
+            {{- range $index, $condition := .Resource.status.conditions }}
+            {{- if $index }},{{ end }}
+            {
+              "type": "{{ $condition.type }}",
+              "status": "{{ $condition.status }}",
+              "last_transition_time": "{{ $condition.lastTransitionTime }}"
+            }
+            {{- end }}
+          ]
+        },
+        "metadata": {
+          "creation_timestamp": "{{ .Resource.metadata.creationTimestamp }}",
+          "resource_version": "{{ .Resource.metadata.resourceVersion }}",
+          "generation": {{ .Resource.metadata.generation | default 0 }}
+        }
+      }
+
+---
+# Service for the deployments created above
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: user-services
+  namespace: default
+spec:
+  pollInterval: "5m"
+  prune: true
+  http:
+    url: "https://jsonplaceholder.typicode.com/users"
+    method: GET
+    headers:
+      Accept: "application/json"
+    responsePath: "$"
+  template: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: user-app-{{ .Item.id }}-service
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/name: user-app-service
+        app.kubernetes.io/managed-by: http-query-operator
+        user.id: "{{ .Item.id }}"
+        service.for: user-app-{{ .Item.id }}
+    spec:
+      selector:
+        app: user-app-{{ .Item.id }}
+      ports:
+      - name: http
+        port: 80
+        targetPort: 80
+        protocol: TCP
+      type: ClusterIP
