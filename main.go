@@ -22,7 +22,7 @@ import (
 	metricsserver "sigs.k8s.io/controller-runtime/pkg/metrics/server"
 	webhookserver "sigs.k8s.io/controller-runtime/pkg/webhook" // Corrected import path
 
-	databasev1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1" // Adjust import path
+	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1" // Adjust import path
 	"github.com/konnektr-io/http-query-operator/internal/controller"           // Adjust import path
 	"github.com/konnektr-io/http-query-operator/internal/util"
 	//+kubebuilder:scaffold:imports
@@ -76,7 +76,7 @@ func parseWatchedGVKs(pattern string) ([]schema.GroupVersionKind, error) {
 func init() {
 	utilruntime.Must(clientgoscheme.AddToScheme(scheme))
 
-	utilruntime.Must(databasev1alpha1.AddToScheme(scheme))
+	utilruntime.Must(httpv1alpha1.AddToScheme(scheme))
 	//+kubebuilder:scaffold:scheme
 }
 
@@ -154,13 +154,13 @@ func main() {
 		os.Exit(1)
 	}
 
-	if err = (&controller.DatabaseQueryResourceReconciler{
+	if err = (&controller.HTTPQueryResourceReconciler{
 		Client: mgr.GetClient(),
 		Scheme: mgr.GetScheme(),
-		Log:    ctrl.Log.WithName("controllers").WithName("DatabaseQueryResource"),
+		Log:    ctrl.Log.WithName("controllers").WithName("HTTPQueryResource"),
 		OwnedGVKs: registeredGVKs,
 	}).SetupWithManagerAndGVKs(mgr, registeredGVKs); err != nil {
-		setupLog.Error(err, "unable to create controller", "controller", "DatabaseQueryResource")
+		setupLog.Error(err, "unable to create controller", "controller", "HTTPQueryResource")
 		os.Exit(1)
 	}
 	//+kubebuilder:scaffold:builder
