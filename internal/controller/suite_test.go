@@ -13,7 +13,7 @@ import (
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/konnektr-io/db-query-operator/internal/util"
+	"github.com/konnektr-io/http-query-operator/internal/util"
 	"k8s.io/client-go/kubernetes/scheme"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -21,7 +21,7 @@ import (
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/log/zap"
 
-	databasev1alpha1 "github.com/konnektr-io/db-query-operator/api/v1alpha1"
+	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1"
 )
 
 var (
@@ -32,7 +32,7 @@ var (
 	k8sClient client.Client // You'll be using this client in your tests.
 
 	// Expose the running reconciler for test injection
-	TestReconciler *DatabaseQueryResourceReconciler
+	TestReconciler *HTTPQueryResourceReconciler
 )
 
 func TestControllers(t *testing.T) {
@@ -47,7 +47,7 @@ var _ = BeforeSuite(func() {
 
 	var err error
 	// Register the CRD's scheme
-	err = databasev1alpha1.AddToScheme(scheme.Scheme)
+	err = httpv1alpha1.AddToScheme(scheme.Scheme)
 	Expect(err).NotTo(HaveOccurred())
 	// +kubebuilder:scaffold:scheme
 
@@ -75,7 +75,7 @@ var _ = BeforeSuite(func() {
 	registeredGVKs, err := util.ParseGVKs(gvkPattern)
 	Expect(err).ToNot(HaveOccurred())
 
-	TestReconciler = &DatabaseQueryResourceReconciler{
+	TestReconciler = &HTTPQueryResourceReconciler{
 		Client: k8sManager.GetClient(),
 		Scheme: k8sManager.GetScheme(),
 		OwnedGVKs: registeredGVKs,
