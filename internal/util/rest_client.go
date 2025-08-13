@@ -13,6 +13,7 @@ import (
 
 	"github.com/Masterminds/sprig/v3"
 	"github.com/tidwall/gjson"
+	"golang.org/x/oauth2/clientcredentials"
 )
 
 // RESTClient implements HTTPClient for REST APIs.
@@ -162,6 +163,15 @@ func (r *RESTClient) addAuthentication(req *http.Request, authType string, authC
 		if apiKey != "" {
 			req.Header.Set(header, apiKey)
 		}
+	case "oauth2":
+		// For OAuth2, we need to get a token using client credentials flow
+		token, err := r.getOAuth2Token(req.Context(), authConfig)
+		if err != nil {
+			return fmt.Errorf("failed to get OAuth2 token: %w", err)
+		}
+		if token != "" {
+			req.Header.Set("Authorization", "Bearer "+token)
+		}
 	case "":
 		// No authentication
 	default:
@@ -170,10 +180,69 @@ func (r *RESTClient) addAuthentication(req *http.Request, authType string, authC
 	return nil
 }
 
+// getOAuth2Token performs OAuth2 client credentials flow to get an access token.
+func (r *RESTClient) getOAuth2Token(ctx context.Context, authConfig map[string]string) (string, error) {
+	clientID := authConfig["clientId"]
+	clientSecret := authConfig["clientSecret"]
+	tokenURL := authConfig["tokenUrl"]
+	scopes := authConfig["scopes"]
+
+	if clientID == "" || clientSecret == "" || tokenURL == "" {
+		return "", fmt.Errorf("OAuth2 requires clientId, clientSecret, and tokenUrl")
+	}
+
+	// Configure OAuth2 client credentials
+	config := &clientcredentials.Config{
+		ClientID:     clientID,
+		ClientSecret: clientSecret,
+		TokenURL:     tokenURL,
+	}
+
+	// Parse scopes if provided
+	if scopes != "" {
+		config.Scopes = strings.Fields(scopes)
+	}
+
+	// Get token
+	token, err := config.Token(ctx)
+	if err != nil {
+		return "", fmt.Errorf("failed to retrieve OAuth2 token: %w", err)
+	}
+
+	return token.AccessToken, nil
+}
+
 // parseResponse extracts items from the HTTP response.
 func (r *RESTClient) parseResponse(body []byte, responsePath string) ([]ItemResult, error) {
-	if responsePath == "" {
-		responsePath = "$"
+	if responsePath == "" || responsePath == "$" {
+		// For root path, we need to parse the entire JSON
+		if len(body) == 0 {
+			return []ItemResult{}, nil
+		}
+		
+		// Check if it's an array at root
+		if bytes.HasPrefix(bytes.TrimSpace(body), []byte("[")) {
+			items := []ItemResult{}
+			var rawItems []map[string]interface{}
+			if err := json.Unmarshal(body, &rawItems); err != nil {
+				return nil, fmt.Errorf("failed to parse JSON array: %w", err)
+			}
+			for _, item := range rawItems {
+				items = append(items, ItemResult(item))
+			}
+			return items, nil
+		}
+		
+		// Check if it's an object at root
+		if bytes.HasPrefix(bytes.TrimSpace(body), []byte("{")) {
+			var item map[string]interface{}
+			if err := json.Unmarshal(body, &item); err != nil {
+				return nil, fmt.Errorf("failed to parse JSON object: %w", err)
+			}
+			return []ItemResult{ItemResult(item)}, nil
+		}
+		
+		return nil, fmt.Errorf("response is not a valid JSON object or array")
 	}
 
 	// Use gjson to extract data
@@ -182,7 +251,7 @@ func (r *RESTClient) parseResponse(body []byte, responsePath string) ([]ItemResu
 		return nil, fmt.Errorf("response path '%s' not found in response", responsePath)
 	}
 
-	var items []ItemResult
+	var items []ItemResult = []ItemResult{}
 
 	if result.IsArray() {
 		// Response path points to an array

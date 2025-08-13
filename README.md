@@ -13,7 +13,7 @@ The operator handles the reconciliation loop, ensuring that the resources in the
 
 * **CRD Driven:** Configuration is managed via an `HTTPQueryResource` Custom Resource Definition.
 * **HTTP API Polling:** Periodically queries HTTP/HTTPS endpoints at a configurable interval.
-* **Multiple Authentication:** Supports Basic Auth, Bearer Token, and API Key authentication.
+* **Multiple Authentication:** Supports Basic Auth, Bearer Token, API Key, and OAuth2 Client Credentials authentication.
 * **JSONPath Support:** Extract specific data from JSON responses using JSONPath expressions.
 * **Go Templating:** Define Kubernetes resource manifests using Go templates with Sprig functions.
 * **Item-to-Resource Mapping:** Each item in the API response typically generates one Kubernetes resource.
@@ -127,6 +127,10 @@ stringData:
   
   # For API Key Authentication
   apikey: "your_api_key"
+  
+  # For OAuth2 Client Credentials Authentication
+  clientId: "your_oauth2_client_id"
+  clientSecret: "your_oauth2_client_secret"
 ```
 
 Apply the secret:
@@ -297,6 +301,64 @@ In this example:
 * The `template` generates a Kubernetes `Deployment` for each application.
 * The `statusUpdate` sends deployment status back to the API after reconciliation.
 
+### Example with OAuth2 Authentication
+
+This example shows how to use OAuth2 Client Credentials flow to authenticate with your API:
+
+```yaml
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: oauth2-api-example
+  namespace: default
+spec:
+  pollInterval: "5m"
+  prune: true
+  http:
+    url: "https://api.oauth2example.com/v1/resources"
+    method: "GET"
+    headers:
+      Accept: "application/json"
+    responsePath: "$.data"  # Extract from {"data": [...]} response
+    authenticationRef:
+      name: oauth2-credentials
+      type: oauth2
+      tokenUrl: "https://auth.oauth2example.com/oauth2/token"
+      scopes: "read:resources write:status"
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: resource-{{ .Item.id }}
+      namespace: default
+    data:
+      id: "{{ .Item.id }}"
+      name: "{{ .Item.name }}"
+      description: "{{ .Item.description }}"
+      updated_at: "{{ now | date "2006-01-02T15:04:05Z07:00" }}"
+```
+
+The corresponding OAuth2 credentials secret:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-credentials
+  namespace: default
+type: Opaque
+stringData:
+  clientId: "your_oauth2_client_id"
+  clientSecret: "your_oauth2_client_secret"
+```
+
+In this example:
+
+* The operator uses OAuth2 Client Credentials flow to get an access token from `tokenUrl`.
+* The access token is automatically added to requests as `Authorization: Bearer <token>`.
+* Tokens are automatically refreshed when they expire.
+* Multiple scopes can be requested by separating them with spaces.
+
 ## CRD Specification (`HTTPQueryResourceSpec`)
 
 * `pollInterval` (string, required): Duration string specifying how often to poll the HTTP endpoint (e.g., `"30s"`, `"5m"`, `"1h"`).
@@ -310,12 +372,16 @@ In this example:
   * `authenticationRef` (object, optional): Reference to authentication configuration.
     * `name` (string, required): Name of the Secret containing authentication details.
     * `namespace` (string, optional): Namespace of the Secret. Defaults to the `HTTPQueryResource`'s namespace.
-    * `type` (string, required, enum: `"basic"`, `"bearer"`, `"apikey"`): Type of authentication.
+    * `type` (string, required, enum: `"basic"`, `"bearer"`, `"apikey"`, `"oauth2"`): Type of authentication.
     * `usernameKey` (string, optional): Key in the Secret for the username (basic auth). Defaults to `"username"`.
     * `passwordKey` (string, optional): Key in the Secret for the password (basic auth). Defaults to `"password"`.
     * `tokenKey` (string, optional): Key in the Secret for the token (bearer auth). Defaults to `"token"`.
     * `apikeyKey` (string, optional): Key in the Secret for the API key. Defaults to `"apikey"`.
     * `apikeyHeader` (string, optional): Header name for API key authentication. Defaults to `"X-API-Key"`.
+    * `clientIdKey` (string, optional): Key in the Secret for OAuth2 client ID. Defaults to `"clientId"`.
+    * `clientSecretKey` (string, optional): Key in the Secret for OAuth2 client secret. Defaults to `"clientSecret"`.
+    * `tokenUrl` (string, optional): OAuth2 token endpoint URL for client credentials flow. Required for `oauth2` type.
+    * `scopes` (string, optional): OAuth2 scopes to request (space-separated). Optional for `oauth2` type.
 * `template` (string, required): A Go template string that renders a valid Kubernetes resource manifest (YAML or JSON).
   * **Template Context:** The template receives a map with the following structure:
 

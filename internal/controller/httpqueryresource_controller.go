@@ -1,17 +1,12 @@
 package controller
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
-	"text/template"
 	"time"
 
-	"github.com/Masterminds/sprig/v3"
 	"github.com/go-logr/logr"
-	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -25,7 +20,6 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
-	"sigs.k8s.io/yaml"
 
 	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1"
 	"github.com/konnektr-io/http-query-operator/internal/util"
@@ -46,6 +40,8 @@ type HTTPQueryResourceReconciler struct {
 	Log               logr.Logger
 	HTTPClientFactory func(ctx context.Context) (util.HTTPClient, error)
 	OwnedGVKs         []schema.GroupVersionKind
+	AuthResolver      *util.AuthResolver
+	TemplateProcessor *util.TemplateProcessor
 }
 
 // Key for context value to indicate child resource event
@@ -217,7 +213,12 @@ func (r *HTTPQueryResourceReconciler) reconcileResources(ctx context.Context, ht
 
 	// Set authentication config if provided
 	if httpQueryResource.Spec.HTTP.AuthenticationRef != nil {
-		authConfig, err := r.resolveAuthenticationConfig(ctx, httpQueryResource, httpQueryResource.Spec.HTTP.AuthenticationRef)
+		// Initialize AuthResolver if not set
+		if r.AuthResolver == nil {
+			r.AuthResolver = util.NewAuthResolver(r.Client, r.Log)
+		}
+		
+		authConfig, err := r.AuthResolver.ResolveAuthenticationConfig(ctx, httpQueryResource.Namespace, httpQueryResource.Spec.HTTP.AuthenticationRef)
 		if err != nil {
 			log.Error(err, "Failed to resolve authentication configuration")
 			return ctrl.Result{}, err
@@ -273,80 +274,18 @@ func (r *HTTPQueryResourceReconciler) reconcileResources(ctx context.Context, ht
 func (r *HTTPQueryResourceReconciler) processHTTPResponse(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, items []util.ItemResult) ([]*unstructured.Unstructured, error) {
 	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
 
-	var resources []*unstructured.Unstructured
+	// Initialize TemplateProcessor if not set
+	if r.TemplateProcessor == nil {
+		r.TemplateProcessor = util.NewTemplateProcessor()
+	}
 
-	// Process each item from the HTTP response
-	for i, item := range items {
-		// Process template to create Kubernetes resource
-		tmpl, err := template.New("resource").Funcs(sprig.TxtFuncMap()).Parse(httpQueryResource.Spec.Template)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse template: %w", err)
-		}
-
-		// Template data includes the item data and index
-		templateData := map[string]interface{}{
-			"Item":  item,
-			"Index": i,
-		}
-
-		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, templateData); err != nil {
-			return nil, fmt.Errorf("failed to execute template for item %d: %w", i, err)
-		}
-
-		// Parse the generated YAML/JSON into Kubernetes resources
-		itemResources, err := r.parseResources(buf.String())
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse resources for item %d: %w", i, err)
-		}
-
-		// Add metadata to track the original item data for status updates
-		itemJSON, _ := json.Marshal(item)
-		for _, resource := range itemResources {
-			// Add annotation with original item data
-			annotations := resource.GetAnnotations()
-			if annotations == nil {
-				annotations = make(map[string]string)
-			}
-			annotations["konnektr.io/original-item"] = string(itemJSON)
-			resource.SetAnnotations(annotations)
-		}
-
-		resources = append(resources, itemResources...)
+	// Use TemplateProcessor to process items into resources
+	resources, err := r.TemplateProcessor.ProcessHTTPResponseToResources(httpQueryResource.Spec.Template, items)
+	if err != nil {
+		return nil, err
 	}
 
 	log.Info("Processed HTTP response", "itemCount", len(items), "resourceCount", len(resources))
-	return resources, nil
-}
-
-// parseResources parses YAML/JSON string into Kubernetes resources
-func (r *HTTPQueryResourceReconciler) parseResources(data string) ([]*unstructured.Unstructured, error) {
-	var resources []*unstructured.Unstructured
-
-	// Split by YAML document separator
-	docs := strings.Split(data, "---")
-	for _, doc := range docs {
-		doc = strings.TrimSpace(doc)
-		if doc == "" {
-			continue
-		}
-
-		// Try to parse as JSON first, then YAML
-		var obj map[string]interface{}
-		if err := json.Unmarshal([]byte(doc), &obj); err != nil {
-			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
-				return nil, fmt.Errorf("failed to parse document as JSON or YAML: %w", err)
-			}
-		}
-
-		if len(obj) == 0 {
-			continue
-		}
-
-		resource := &unstructured.Unstructured{Object: obj}
-		resources = append(resources, resource)
-	}
-
 	return resources, nil
 }
 
@@ -547,93 +486,6 @@ func statusChangePredicate() predicate.Predicate {
 	}
 }
 
-// resolvedAuthConfig holds the resolved authentication configuration
-type resolvedAuthConfig struct {
-	AuthType   string
-	AuthConfig map[string]string
-}
-
-// resolveAuthenticationConfig resolves authentication credentials from Kubernetes secrets
-func (r *HTTPQueryResourceReconciler) resolveAuthenticationConfig(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, authRef *httpv1alpha1.HTTPAuthenticationRef) (*resolvedAuthConfig, error) {
-	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
-	
-	// Determine secret namespace (default to HTTPQueryResource's namespace)
-	secretNamespace := authRef.Namespace
-	if secretNamespace == "" {
-		secretNamespace = httpQueryResource.Namespace
-	}
-	
-	// Fetch the secret
-	secret := &corev1.Secret{}
-	secretKey := types.NamespacedName{
-		Name:      authRef.Name,
-		Namespace: secretNamespace,
-	}
-	
-	if err := r.Get(ctx, secretKey, secret); err != nil {
-		if apierrors.IsNotFound(err) {
-			return nil, fmt.Errorf("authentication secret '%s' not found in namespace '%s'", authRef.Name, secretNamespace)
-		}
-		return nil, fmt.Errorf("failed to get authentication secret '%s' in namespace '%s': %w", authRef.Name, secretNamespace, err)
-	}
-	
-	// Helper function to get value from secret with default key
-	getValue := func(specifiedKey, defaultKey string) string {
-		key := specifiedKey
-		if key == "" {
-			key = defaultKey
-		}
-		if value, exists := secret.Data[key]; exists {
-			return string(value)
-		}
-		return ""
-	}
-	
-	authConfig := &resolvedAuthConfig{
-		AuthType:   authRef.Type,
-		AuthConfig: make(map[string]string),
-	}
-	
-	switch authRef.Type {
-	case "basic":
-		username := getValue(authRef.UsernameKey, "username")
-		password := getValue(authRef.PasswordKey, "password")
-		authConfig.AuthConfig["username"] = username
-		authConfig.AuthConfig["password"] = password
-		
-		if username == "" && password == "" {
-			log.Info("Warning: Basic auth configured but no credentials found in secret", "secret", authRef.Name)
-		}
-		
-	case "bearer":
-		token := getValue(authRef.TokenKey, "token")
-		authConfig.AuthConfig["token"] = token
-		
-		if token == "" {
-			log.Info("Warning: Bearer auth configured but no token found in secret", "secret", authRef.Name)
-		}
-		
-	case "apikey":
-		apiKey := getValue(authRef.APIKeyKey, "apikey")
-		header := authRef.APIKeyHeader
-		if header == "" {
-			header = "X-API-Key"
-		}
-		authConfig.AuthConfig["apikey"] = apiKey
-		authConfig.AuthConfig["header"] = header
-		
-		if apiKey == "" {
-			log.Info("Warning: API key auth configured but no API key found in secret", "secret", authRef.Name)
-		}
-		
-	default:
-		return nil, fmt.Errorf("unsupported authentication type: %s", authRef.Type)
-	}
-	
-	log.V(1).Info("Successfully resolved authentication configuration", "type", authRef.Type, "secret", authRef.Name)
-	return authConfig, nil
-}
-
 // updateStatusForChildResources sends status updates for managed resources
 func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, resources []*unstructured.Unstructured, httpClient util.HTTPClient) error {
 	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
@@ -652,7 +504,12 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 	
 	// Resolve authentication for status updates
 	if httpQueryResource.Spec.StatusUpdate.AuthenticationRef != nil {
-		authConfig, err := r.resolveAuthenticationConfig(ctx, httpQueryResource, httpQueryResource.Spec.StatusUpdate.AuthenticationRef)
+		// Initialize AuthResolver if not set
+		if r.AuthResolver == nil {
+			r.AuthResolver = util.NewAuthResolver(r.Client, r.Log)
+		}
+		
+		authConfig, err := r.AuthResolver.ResolveAuthenticationConfig(ctx, httpQueryResource.Namespace, httpQueryResource.Spec.StatusUpdate.AuthenticationRef)
 		if err != nil {
 			log.Error(err, "Failed to resolve status update authentication configuration")
 			return err

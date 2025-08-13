@@ -13,8 +13,8 @@ type HTTPAuthenticationRef struct {
 	// Namespace of the Secret. Defaults to the namespace of the HTTPQueryResource.
 	// +optional
 	Namespace string `json:"namespace,omitempty"`
-	// Type of authentication. Supported: basic, bearer, apikey
-	// +kubebuilder:validation:Enum=basic;bearer;apikey
+	// Type of authentication. Supported: basic, bearer, apikey, oauth2
+	// +kubebuilder:validation:Enum=basic;bearer;apikey;oauth2
 	// +kubebuilder:validation:Required
 	Type string `json:"type"`
 	// Key within the Secret for the username (basic auth). Defaults to "username".
@@ -32,6 +32,18 @@ type HTTPAuthenticationRef struct {
 	// Header name for API key authentication. Defaults to "X-API-Key".
 	// +optional
 	APIKeyHeader string `json:"apikeyHeader,omitempty"`
+	// Key within the Secret for OAuth2 client ID. Defaults to "clientId".
+	// +optional
+	ClientIDKey string `json:"clientIdKey,omitempty"`
+	// Key within the Secret for OAuth2 client secret. Defaults to "clientSecret".
+	// +optional
+	ClientSecretKey string `json:"clientSecretKey,omitempty"`
+	// OAuth2 token endpoint URL for client credentials flow.
+	// +optional
+	TokenURL string `json:"tokenUrl,omitempty"`
+	// OAuth2 scopes to request (space-separated). Optional.
+	// +optional
+	Scopes string `json:"scopes,omitempty"`
 }
 
 // HTTPSpec defines the HTTP request details.

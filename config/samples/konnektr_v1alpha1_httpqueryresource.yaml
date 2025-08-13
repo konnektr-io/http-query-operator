@@ -234,3 +234,83 @@ spec:
         "album_id": "{{ .Resource.metadata.labels.album-id }}",
         "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
       }
+
+---
+# OAuth2 Example: Fetch resources with OAuth2 client credentials authentication
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: oauth2-resources
+  namespace: default
+spec:
+  pollInterval: "10m"
+  prune: true
+  http:
+    url: "https://api.mycompany.com/v2/resources"
+    method: GET
+    headers:
+      Accept: "application/json"
+      User-Agent: "http-query-operator/1.0"
+    responsePath: "$.data"  # Extract from {"data": [...]} response
+    authenticationRef:
+      name: oauth2-api-credentials
+      type: oauth2
+      tokenUrl: "https://auth.mycompany.com/oauth2/token"
+      scopes: "read:resources write:status"
+  template: |
+    apiVersion: v1
+    kind: Secret
+    metadata:
+      name: resource-{{ .Item.id }}-config
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/managed-by: http-query-operator
+        resource-id: "{{ .Item.id }}"
+        resource-type: "{{ .Item.type }}"
+    type: Opaque
+    stringData:
+      resource_id: "{{ .Item.id }}"
+      resource_name: "{{ .Item.name }}"
+      resource_type: "{{ .Item.type }}"
+      description: "{{ .Item.description }}"
+      environment: "{{ .Item.environment | default \"production\" }}"
+      owner: "{{ .Item.owner }}"
+      last_synced: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+      # Configuration data as JSON
+      config: |
+        {{ .Item.config | toJson }}
+  statusUpdate:
+    url: "https://api.mycompany.com/v2/resources/{{ .Item.id }}/sync-status"
+    method: PATCH
+    headers:
+      Content-Type: "application/json"
+    bodyTemplate: |
+      {
+        "sync_status": {
+          "kubernetes_secret": "{{ .Resource.metadata.name }}",
+          "namespace": "{{ .Resource.metadata.namespace }}",
+          "last_updated": "{{ .Resource.metadata.creationTimestamp }}",
+          "status": "synced"
+        },
+        "operator_info": {
+          "version": "1.0.0",
+          "sync_time": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+        }
+      }
+    authenticationRef:
+      name: oauth2-api-credentials
+      type: oauth2
+      tokenUrl: "https://auth.mycompany.com/oauth2/token"
+      scopes: "write:status"
+
+---
+# OAuth2 Credentials Secret for the above example
+apiVersion: v1
+kind: Secret
+metadata:
+  name: oauth2-api-credentials
+  namespace: default
+type: Opaque
+stringData:
+  clientId: "your-oauth2-client-id"
+  clientSecret: "your-oauth2-client-secret"
