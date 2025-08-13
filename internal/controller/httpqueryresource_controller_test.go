@@ -554,7 +554,7 @@ data:
   email: "{{ .Item.profile.contact.email }}"
   theme: "{{ .Item.settings.theme }}"
   notifications: "{{ .Item.settings.notifications }}"
-  full-profile: {{ .Item | toJson }}`,
+  full-profile: "{{ .Item | toJson }}"`,
 				},
 			}
 			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
