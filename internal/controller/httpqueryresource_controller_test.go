@@ -375,7 +375,7 @@ data:
 						},
 						BodyTemplate: `{
   "resource_name": "{{ .Resource.metadata.name }}",
-  "resource_kind": "{{ .Resource.kind }}",
+  "resource_gvk": "{{ .ResourceGVK.Kind }}",
   "original_item": {{ .Item | toJson }},
   "timestamp": "{{ now | date "2006-01-02T15:04:05Z07:00" }}"
 }`,
@@ -433,12 +433,12 @@ data:
 					
 					// Verify template was processed correctly
 					g.Expect(body).To(HaveKey("resource_name"))
-					g.Expect(body).To(HaveKey("resource_kind"))
+					g.Expect(body).To(HaveKey("resource_gvk"))
 					g.Expect(body).To(HaveKey("original_item"))
 					g.Expect(body).To(HaveKey("timestamp"))
 					
 					// Verify resource information
-					g.Expect(body["resource_kind"]).To(Equal("ConfigMap"))
+					g.Expect(body["resource_gvk"]).To(Equal("ConfigMap"))
 					
 					// Verify original item contains expected user data
 					originalItem, ok := body["original_item"].(map[string]interface{})
