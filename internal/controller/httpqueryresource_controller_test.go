@@ -159,7 +159,7 @@ data:
   email: "{{ .Item.email }}"
   role: "{{ .Item.role }}"
   display-name: "{{ .Item.username | title }}"
-  created-at: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"`,
+  created-at: "{{ now | date "2006-01-02T15:04:05Z07:00" }}"`,
 				},
 			}
 			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
