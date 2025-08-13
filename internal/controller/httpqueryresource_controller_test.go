@@ -538,7 +538,7 @@ data:
 						Headers: map[string]string{
 							"Accept": "application/json",
 						},
-						ResponsePath: "$.data.users[*]", // Extract the users array from nested structure
+						ResponsePath: "data.users[*]", // Extract the users array from nested structure
 					},
 					Template: `apiVersion: v1
 kind: ConfigMap
