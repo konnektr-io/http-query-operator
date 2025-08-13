@@ -556,17 +556,9 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 			"Item":     originalItem,
 		}
 		
-		// Debug: Log the resource structure to understand what's available
-		log.V(1).Info("Status update template context", 
-			"resource", currentResource.Object, 
-			"resourceKind", currentResource.GetKind(),
-			"resourceAPIVersion", currentResource.GetAPIVersion(),
-			"resourceGVK", currentResource.GroupVersionKind(),
-			"item", originalItem)
-		
 		// Execute status update with enhanced context
 		if err := httpClient.ExecuteStatusUpdate(ctx, statusConfig, templateData); err != nil {
-			log.Error(err, "Failed to execute status update for resource", "resource", resource.GetName(), "templateData", templateData)
+			log.Error(err, "Failed to execute status update for resource", "resource", resource.GetName())
 			// Continue with other resources even if one fails
 			continue
 		}

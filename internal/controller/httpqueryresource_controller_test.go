@@ -404,25 +404,12 @@ data:
 					g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
 					labels := createdCM.GetLabels()
 					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, ControllerName))
-					
-					// Debug: Print the ConfigMap structure to understand what we get
-					fmt.Printf("DEBUG: Created ConfigMap %s: %+v\n", cmName, createdCM)
-					fmt.Printf("DEBUG: ConfigMap Kind: %s, APIVersion: %s\n", createdCM.Kind, createdCM.APIVersion)
-					fmt.Printf("DEBUG: ConfigMap Labels: %+v\n", createdCM.Labels)
-					fmt.Printf("DEBUG: ConfigMap Data: %+v\n", createdCM.Data)
 				}, timeout, interval).Should(Succeed())
 			}
 
 			// Wait for status update requests to be sent
 			Eventually(func(g Gomega) {
 				requests := mockServer.GetRequests()
-				fmt.Printf("DEBUG: Total requests received: %d\n", len(requests))
-				for i, req := range requests {
-					fmt.Printf("DEBUG: Request %d: %s %s\n", i, req.Method, req.URL)
-					if req.Body != "" {
-						fmt.Printf("DEBUG: Request %d body: %s\n", i, req.Body)
-					}
-				}
 				
 				// Filter for status update requests (POST to /status-updates)
 				statusUpdateRequests := []MockRequest{}
@@ -432,15 +419,11 @@ data:
 					}
 				}
 				
-				fmt.Printf("DEBUG: Status update requests found: %d\n", len(statusUpdateRequests))
-				
 				// Should have at least 2 status update requests (one for each user)
 				g.Expect(len(statusUpdateRequests)).To(BeNumerically(">=", 2))
 				
 				// Verify the request structure
-				for i, req := range statusUpdateRequests {
-					fmt.Printf("DEBUG: Examining status update request %d body: %s\n", i, req.Body)
-					
+				for _, req := range statusUpdateRequests {
 					// Check headers
 					g.Expect(req.Headers).To(HaveKeyWithValue("Content-Type", "application/json"))
 					
@@ -448,15 +431,11 @@ data:
 					var body map[string]interface{}
 					g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
 					
-					fmt.Printf("DEBUG: Parsed body %d: %+v\n", i, body)
-					
 					// Verify template was processed correctly
 					g.Expect(body).To(HaveKey("resource_name"))
 					g.Expect(body).To(HaveKey("resource_kind"))
 					g.Expect(body).To(HaveKey("original_item"))
 					g.Expect(body).To(HaveKey("timestamp"))
-					
-					fmt.Printf("DEBUG: resource_kind value: '%v' (type: %T)\n", body["resource_kind"], body["resource_kind"])
 					
 					// Verify resource information
 					g.Expect(body["resource_kind"]).To(Equal("ConfigMap"))
@@ -596,12 +575,6 @@ func (m *MockHTTPServer) handleRequest(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	m.requests = append(m.requests, req)
-
-	// Debug: Print request details
-	fmt.Printf("MOCK SERVER: %s %s\n", req.Method, req.URL)
-	if body != "" {
-		fmt.Printf("MOCK SERVER BODY: %s\n", body)
-	}
 
 	// Find response for this path
 	path := r.URL.Path

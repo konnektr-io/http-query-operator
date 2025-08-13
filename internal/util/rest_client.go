@@ -66,13 +66,10 @@ func (r *RESTClient) ExecuteStatusUpdate(ctx context.Context, config HTTPStatusU
 
 	var bodyBuffer bytes.Buffer
 	// Use the full resource data as template context (which should contain both Resource and Item)
-	fmt.Printf("REST CLIENT DEBUG: Template context: %+v\n", resource)
-	fmt.Printf("REST CLIENT DEBUG: Body template: %s\n", config.BodyTemplate)
 	err = tmpl.Execute(&bodyBuffer, resource)
 	if err != nil {
 		return fmt.Errorf("failed to render body template: %w", err)
 	}
-	fmt.Printf("REST CLIENT DEBUG: Rendered body: %s\n", bodyBuffer.String())
 
 	// Render the URL template
 	urlTmpl, err := template.New("statusUpdateURL").Funcs(sprig.TxtFuncMap()).Parse(config.URL)
