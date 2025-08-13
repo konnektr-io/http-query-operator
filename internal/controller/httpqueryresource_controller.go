@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"time"
 
 	"github.com/go-logr/logr"
@@ -257,6 +258,17 @@ func (r *HTTPQueryResourceReconciler) reconcileResources(ctx context.Context, ht
 			return ctrl.Result{}, err
 		}
 	}
+
+	// Set Status.ManagedResources to the names of all managed resources (sorted)
+	managedResourceNames := make([]string, 0, len(resources))
+	for _, resource := range resources {
+		managedResourceNames = append(managedResourceNames, resource.GetName())
+	}
+	// Sort for consistency
+	if len(managedResourceNames) > 1 {
+		sort.Strings(managedResourceNames)
+	}
+	httpQueryResource.Status.ManagedResources = managedResourceNames
 
 	// Execute status update callbacks for managed resources if configured
 	if httpQueryResource.Spec.StatusUpdate != nil {
