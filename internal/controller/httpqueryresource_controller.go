@@ -552,8 +552,14 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		
 		// Create enhanced template context with both resource and original item
 		templateData := map[string]interface{}{
-			"Resource": currentResource.Object,
-			"Item":     originalItem,
+			"Resource": map[string]interface{}{
+				"kind":       currentResource.GetKind(),
+				"apiVersion": currentResource.GetAPIVersion(),
+				"metadata":   currentResource.Object["metadata"],
+				"spec":       currentResource.Object["spec"],
+				"status":     currentResource.Object["status"],
+			},
+			"Item": originalItem,
 		}
 		
 		// Execute status update with enhanced context
