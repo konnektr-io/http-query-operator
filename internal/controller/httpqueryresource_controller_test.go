@@ -2,11 +2,13 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -325,12 +327,136 @@ data:
 			Expect(k8sClient.Delete(ctx, authSecret)).To(Succeed())
 		})
 
-		// TODO: Placeholder for status update test
-		XIt("should send status updates to HTTP endpoint when resource status changes", func() {
-			// This test will verify:
-			// - Status update HTTP requests are sent when child resources change
-			// - Template rendering works for status update body and URL
-			// - Authentication works for status updates
+		It("should send status updates to HTTP endpoint when resource status changes", func() {
+			// Create a mock HTTP server with configurable responses
+			mockServer := NewMockHTTPServer()
+			defer mockServer.Close()
+
+			// Set up response for the main data request
+			mainResponse := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body: `[
+					{"id": 1, "username": "alice", "email": "alice@example.com", "role": "admin"},
+					{"id": 2, "username": "bob", "email": "bob@example.com", "role": "user"}
+				]`,
+			}
+			mockServer.SetResponse("/users", mainResponse)
+
+			// Set up response for status update endpoint
+			statusUpdateResponse := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body:       `{"status": "updated"}`,
+			}
+			mockServer.SetResponse("/status-updates", statusUpdateResponse)
+
+			// Create the HTTPQueryResource with status update configuration
+			hqr := &httpv1alpha1.HTTPQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "status-update-hqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					PollInterval: "10s",
+					HTTP: httpv1alpha1.HTTPSpec{
+						URL:    mockServer.URL() + "/users",
+						Method: "GET",
+						Headers: map[string]string{
+							"Accept": "application/json",
+						},
+						ResponsePath: "$",
+					},
+					StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
+						URL:    mockServer.URL() + "/status-updates",
+						Method: "POST",
+						Headers: map[string]string{
+							"Content-Type": "application/json",
+						},
+						BodyTemplate: `{
+  "resource_name": "{{ .Resource.metadata.name }}",
+  "resource_kind": "{{ .Resource.kind }}",
+  "original_item": {{ .Item | toJson }},
+  "timestamp": "{{ now | date "2006-01-02T15:04:05Z07:00" }}"
+}`,
+					},
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: user-{{ .Item.username | lower }}
+  namespace: default
+data:
+  user-id: "{{ .Item.id }}"
+  username: "{{ .Item.username }}"
+  email: "{{ .Item.email }}"
+  role: "{{ .Item.role }}"`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+			// Wait for ConfigMaps to be created
+			usernames := []string{"alice", "bob"}
+			for _, username := range usernames {
+				cmName := "user-" + username
+				cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+				createdCM := &corev1.ConfigMap{}
+				Eventually(func(g Gomega) {
+					g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+					labels := createdCM.GetLabels()
+					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, ControllerName))
+				}, timeout, interval).Should(Succeed())
+			}
+
+			// Wait for status update requests to be sent
+			Eventually(func(g Gomega) {
+				requests := mockServer.GetRequests()
+				
+				// Filter for status update requests (POST to /status-updates)
+				statusUpdateRequests := []MockRequest{}
+				for _, req := range requests {
+					if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
+						statusUpdateRequests = append(statusUpdateRequests, req)
+					}
+				}
+				
+				// Should have at least 2 status update requests (one for each user)
+				g.Expect(len(statusUpdateRequests)).To(BeNumerically(">=", 2))
+				
+				// Verify the request structure
+				for _, req := range statusUpdateRequests {
+					// Check headers
+					g.Expect(req.Headers).To(HaveKeyWithValue("Content-Type", "application/json"))
+					
+					// Parse and validate the request body
+					var body map[string]interface{}
+					g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
+					
+					// Verify template was processed correctly
+					g.Expect(body).To(HaveKey("resource_name"))
+					g.Expect(body).To(HaveKey("resource_kind"))
+					g.Expect(body).To(HaveKey("original_item"))
+					g.Expect(body).To(HaveKey("timestamp"))
+					
+					// Verify resource information
+					g.Expect(body["resource_kind"]).To(Equal("ConfigMap"))
+					
+					// Verify original item contains expected user data
+					originalItem, ok := body["original_item"].(map[string]interface{})
+					g.Expect(ok).To(BeTrue(), "original_item should be an object")
+					g.Expect(originalItem).To(HaveKey("username"))
+					g.Expect(originalItem).To(HaveKey("email"))
+					g.Expect(originalItem).To(HaveKey("role"))
+					
+					// Verify timestamp format
+					timestamp, ok := body["timestamp"].(string)
+					g.Expect(ok).To(BeTrue(), "timestamp should be a string")
+					_, err := time.Parse("2006-01-02T15:04:05Z07:00", timestamp)
+					g.Expect(err).ToNot(HaveOccurred(), "timestamp should be in RFC3339 format")
+				}
+			}, timeout, interval).Should(Succeed())
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 		})
 
 		// TODO: Placeholder for JSON path test
