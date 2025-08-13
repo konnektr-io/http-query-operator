@@ -75,10 +75,24 @@ var _ = BeforeSuite(func() {
 	registeredGVKs, err := util.ParseGVKs(gvkPattern)
 	Expect(err).ToNot(HaveOccurred())
 
+	// Initialize the required components for the reconciler
+	logger := logf.FromContext(ctx)
+	authResolver := util.NewAuthResolver(k8sManager.GetClient(), logger)
+
+	templateProcessor := util.NewTemplateProcessor()
+
+	// Create HTTP client factory that returns a real HTTP client for tests
+	httpClientFactory := func(ctx context.Context) (util.HTTPClient, error) {
+		return util.NewRESTClient(), nil
+	}
+
 	TestReconciler = &HTTPQueryResourceReconciler{
-		Client: k8sManager.GetClient(),
-		Scheme: k8sManager.GetScheme(),
-		OwnedGVKs: registeredGVKs,
+		Client:            k8sManager.GetClient(),
+		Scheme:            k8sManager.GetScheme(),
+		OwnedGVKs:         registeredGVKs,
+		HTTPClientFactory: httpClientFactory,
+		AuthResolver:      authResolver,
+		TemplateProcessor: templateProcessor,
 	}
 	err = TestReconciler.SetupWithManagerAndGVKs(k8sManager, registeredGVKs)
 	Expect(err).ToNot(HaveOccurred())
