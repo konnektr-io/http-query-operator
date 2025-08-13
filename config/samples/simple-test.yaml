@@ -1,0 +1,29 @@
+# Testing Example: Simple working configuration for development
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: simple-test
+  namespace: default
+spec:
+  pollInterval: "30s"  # Poll every 30 seconds for quick testing
+  prune: true
+  http:
+    url: "https://jsonplaceholder.typicode.com/users"
+    method: GET
+    headers:
+      Accept: "application/json"
+    responsePath: "$"
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: test-user-{{ .Item.id }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/managed-by: http-query-operator
+        test-user-id: "{{ .Item.id }}"
+    data:
+      user-id: "{{ .Item.id }}"
+      username: "{{ .Item.username }}"
+      email: "{{ .Item.email }}"
+      last-sync: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"

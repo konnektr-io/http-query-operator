@@ -1,0 +1,236 @@
+# Simple Example: Fetch users from JSONPlaceholder and create ConfigMaps
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: jsonplaceholder-users
+  namespace: default
+spec:
+  pollInterval: "2m"
+  prune: true
+  http:
+    url: "https://jsonplaceholder.typicode.com/users"
+    method: GET
+    headers:
+      Accept: "application/json"
+      User-Agent: "http-query-operator/1.0"
+    responsePath: "$" # Root array
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: user-{{ .Item.username | lower }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/managed-by: http-query-operator
+        user-id: "{{ .Item.id }}"
+        source: jsonplaceholder
+    data:
+      id: "{{ .Item.id }}"
+      name: "{{ .Item.name }}"
+      username: "{{ .Item.username }}"
+      email: "{{ .Item.email }}"
+      phone: "{{ .Item.phone }}"
+      website: "{{ .Item.website }}"
+      company: "{{ .Item.company.name }}"
+      created-at: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+
+---
+# Complete Example: Fetch data with authentication and status updates
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-credentials
+  namespace: default
+type: Opaque
+stringData:
+  token: "your-bearer-token-here"
+  username: "your-api-username"
+  password: "your-api-password"
+  apikey: "your-api-key-here"
+
+---
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: api-with-auth-and-status
+  namespace: default
+  finalizers:
+    - konnektr.io/httpqueryresource-finalizer
+spec:
+  pollInterval: "5m"
+  prune: true
+  http:
+    url: "https://jsonplaceholder.typicode.com/posts"
+    method: GET
+    headers:
+      Accept: "application/json"
+      Content-Type: "application/json"
+    # Example with bearer authentication (uncomment to use)
+    # authenticationRef:
+    #   name: api-credentials
+    #   type: bearer
+    #   tokenKey: token
+    responsePath: "$" # Posts are in root array
+  template: |
+    apiVersion: apps/v1
+    kind: Deployment
+    metadata:
+      name: post-{{ .Item.id }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/name: post-app
+        app.kubernetes.io/managed-by: http-query-operator
+        post-id: "{{ .Item.id }}"
+        user-id: "{{ .Item.userId }}"
+    spec:
+      replicas: 1
+      selector:
+        matchLabels:
+          app: post-{{ .Item.id }}
+      template:
+        metadata:
+          labels:
+            app: post-{{ .Item.id }}
+            post-id: "{{ .Item.id }}"
+        spec:
+          containers:
+          - name: nginx
+            image: nginx:1.21
+            ports:
+            - containerPort: 80
+            env:
+            - name: POST_ID
+              value: "{{ .Item.id }}"
+            - name: POST_TITLE
+              value: "{{ .Item.title }}"
+            - name: USER_ID
+              value: "{{ .Item.userId }}"
+  # Status update example - report deployment status back to API
+  statusUpdate:
+    url: "https://httpbin.org/post"  # Use httpbin.org for testing
+    method: POST
+    headers:
+      Content-Type: "application/json"
+      Accept: "application/json"
+    # authenticationRef:
+    #   name: api-credentials
+    #   type: bearer
+    #   tokenKey: token
+    bodyTemplate: |
+      {
+        "deployment": {
+          "name": "{{ .Resource.metadata.name }}",
+          "namespace": "{{ .Resource.metadata.namespace }}",
+          "post_id": "{{ .Resource.metadata.labels.post-id }}",
+          "status": {
+            "replicas": {{ .Resource.spec.replicas | default 0 }},
+            "available_replicas": {{ .Resource.status.availableReplicas | default 0 }},
+            "ready_replicas": {{ .Resource.status.readyReplicas | default 0 }},
+            "updated_replicas": {{ .Resource.status.updatedReplicas | default 0 }}
+          },
+          "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+        }
+      }
+
+---
+# Advanced Example: Complex API with nested response structure
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: nested-api-example
+  namespace: default
+spec:
+  pollInterval: "10m"
+  prune: false  # Don't delete resources when they disappear from API
+  http:
+    url: "https://jsonplaceholder.typicode.com/users"
+    method: GET
+    headers:
+      Accept: "application/json"
+    # Extract nested data if response was wrapped like: {"data": {"users": [...]}}
+    # For JSONPlaceholder, users are at root, so we use "$"
+    responsePath: "$"
+  template: |
+    apiVersion: v1
+    kind: Service
+    metadata:
+      name: user-{{ .Item.username | lower }}-service
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/managed-by: http-query-operator
+        user-id: "{{ .Item.id }}"
+        service-type: user-service
+      annotations:
+        user.company: "{{ .Item.company.name }}"
+        user.website: "{{ .Item.website }}"
+        user.email: "{{ .Item.email }}"
+    spec:
+      selector:
+        app: user-{{ .Item.username | lower }}
+      ports:
+      - name: http
+        port: 80
+        targetPort: 8080
+        protocol: TCP
+      type: ClusterIP
+
+---
+# API Key Authentication Example
+apiVersion: v1
+kind: Secret
+metadata:
+  name: apikey-credentials
+  namespace: default
+type: Opaque
+stringData:
+  apikey: "your-api-key-value"
+
+---
+apiVersion: konnektr.io/v1alpha1
+kind: HTTPQueryResource
+metadata:
+  name: apikey-auth-example
+  namespace: default
+spec:
+  pollInterval: "1m"
+  prune: true
+  http:
+    url: "https://jsonplaceholder.typicode.com/albums"
+    method: GET
+    headers:
+      Accept: "application/json"
+    # Example API key authentication (uncomment to use)
+    # authenticationRef:
+    #   name: apikey-credentials
+    #   type: apikey
+    #   apikeyKey: apikey
+    #   apikeyHeader: "X-API-Key"  # Custom header name
+    responsePath: "$"
+  template: |
+    apiVersion: v1
+    kind: ConfigMap
+    metadata:
+      name: album-{{ .Item.id }}
+      namespace: {{ .Metadata.Namespace }}
+      labels:
+        app.kubernetes.io/managed-by: http-query-operator
+        album-id: "{{ .Item.id }}"
+        user-id: "{{ .Item.userId }}"
+    data:
+      album-id: "{{ .Item.id }}"
+      user-id: "{{ .Item.userId }}"
+      title: "{{ .Item.title }}"
+      created-at: "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+  # Simple status update - just log the operation
+  statusUpdate:
+    url: "https://httpbin.org/post"
+    method: POST
+    headers:
+      Content-Type: "application/json"
+    bodyTemplate: |
+      {
+        "action": "configmap_created",
+        "resource_name": "{{ .Resource.metadata.name }}",
+        "album_id": "{{ .Resource.metadata.labels.album-id }}",
+        "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+      }
