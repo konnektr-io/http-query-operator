@@ -1,23 +1,37 @@
 package controller
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+	"text/template"
 	"time"
 
+	"github.com/Masterminds/sprig/v3"
 	"github.com/go-logr/logr"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
 	ctrl "sigs.k8s.io/controller-runtime"
+	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
+	"sigs.k8s.io/controller-runtime/pkg/event"
 	"sigs.k8s.io/controller-runtime/pkg/log"
+	"sigs.k8s.io/controller-runtime/pkg/predicate"
+	"sigs.k8s.io/yaml"
 
 	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1"
 	"github.com/konnektr-io/http-query-operator/internal/util"
 )
 
 const (
-	ManagedByLabel         = "konnektr.io/managed-by"
+	ManagedByLabel         = "konnektr.io/managed-by" // Label to identify managed resources
 	ControllerName         = "httpqueryresource-controller"
 	ConditionReconciled    = "Reconciled"
 	ConditionHTTPConnected = "HTTPConnected"
@@ -33,6 +47,16 @@ type HTTPQueryResourceReconciler struct {
 	OwnedGVKs         []schema.GroupVersionKind
 }
 
+// Key for context value to indicate child resource event
+var childResourceEventKey = struct{}{}
+
+// Info about the triggering child resource
+type childResourceInfo struct {
+	GVK       schema.GroupVersionKind
+	Namespace string
+	Name      string
+}
+
 //+kubebuilder:rbac:groups=konnektr.io,resources=httpqueryresources,verbs=get;list;watch;create;update;patch;delete
 //+kubebuilder:rbac:groups=konnektr.io,resources=httpqueryresources/status,verbs=get;update;patch
 //+kubebuilder:rbac:groups=konnektr.io,resources=httpqueryresources/finalizers,verbs=update
@@ -45,41 +69,493 @@ func (r *HTTPQueryResourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	r.Log = log
 	log.Info("Reconciling HTTPQueryResource", "Request.Namespace", req.Namespace, "Request.Name", req.Name)
 
+	// Check if this reconciliation was triggered by a child resource
+	childInfo, isChildEvent := ctx.Value(childResourceEventKey).(*childResourceInfo)
+	if isChildEvent {
+		log.Info("Reconciliation triggered by child resource event",
+			"child-gvk", childInfo.GVK.String(),
+			"child-name", childInfo.Name,
+			"child-namespace", childInfo.Namespace)
+	}
+
 	// Fetch the HTTPQueryResource instance
-	httpqr := &httpv1alpha1.HTTPQueryResource{}
-	if err := r.Get(ctx, req.NamespacedName, httpqr); err != nil {
+	httpQueryResource := &httpv1alpha1.HTTPQueryResource{}
+	err := r.Get(ctx, req.NamespacedName, httpQueryResource)
+	if err != nil {
 		if apierrors.IsNotFound(err) {
-			log.Info("HTTPQueryResource not found. Ignoring since object must be deleted.")
+			log.Info("HTTPQueryResource not found. Ignoring since object must be deleted")
 			return ctrl.Result{}, nil
 		}
 		log.Error(err, "Failed to get HTTPQueryResource")
 		return ctrl.Result{}, err
 	}
 
-	// Parse Poll Interval
-	pollInterval, err := time.ParseDuration(httpqr.Spec.PollInterval)
-	if err != nil {
-		log.Error(err, "Invalid pollInterval format")
+	// Handle deletion
+	if httpQueryResource.GetDeletionTimestamp() != nil {
+		return r.handleDeletion(ctx, httpQueryResource)
+	}
+
+	// Add finalizer if not present
+	if !controllerutil.ContainsFinalizer(httpQueryResource, HTTPQueryFinalizer) {
+		controllerutil.AddFinalizer(httpQueryResource, HTTPQueryFinalizer)
+		if err := r.Update(ctx, httpQueryResource); err != nil {
+			log.Error(err, "Failed to add finalizer")
+			return ctrl.Result{}, err
+		}
 		return ctrl.Result{}, nil
 	}
 
-	// TODO: Implement HTTP request logic here
-	log.Info("HTTPQueryResource reconciled successfully", "PollInterval", pollInterval)
+	// Initialize HTTP client
+	httpClient, err := r.HTTPClientFactory(ctx)
+	if err != nil {
+		log.Error(err, "Failed to create HTTP client")
+		r.setCondition(httpQueryResource, ConditionHTTPConnected, metav1.ConditionFalse, "HTTPClientError", err.Error())
+		if updateErr := r.Status().Update(ctx, httpQueryResource); updateErr != nil {
+			log.Error(updateErr, "Failed to update status")
+		}
+		return ctrl.Result{RequeueAfter: time.Second * 30}, nil
+	}
 
-	// Requeue after the poll interval
-	return ctrl.Result{RequeueAfter: pollInterval}, nil
+	// Set HTTP connected condition
+	r.setCondition(httpQueryResource, ConditionHTTPConnected, metav1.ConditionTrue, "HTTPClientConnected", "HTTP client successfully initialized")
+
+	// Execute the reconciliation
+	result, err := r.reconcileResources(ctx, httpQueryResource, httpClient)
+	
+	// Update conditions based on result
+	if err != nil {
+		log.Error(err, "Failed to reconcile resources")
+		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "ReconciliationError", err.Error())
+	} else {
+		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionTrue, "ReconciliationSuccessful", "Resources successfully reconciled")
+	}
+
+	// Update status
+	if statusErr := r.Status().Update(ctx, httpQueryResource); statusErr != nil {
+		log.Error(statusErr, "Failed to update status")
+		return ctrl.Result{}, statusErr
+	}
+
+	// Handle poll interval for requeue
+	if httpQueryResource.Spec.PollInterval != "" {
+		duration, parseErr := time.ParseDuration(httpQueryResource.Spec.PollInterval)
+		if parseErr != nil {
+			log.Error(parseErr, "Invalid poll interval format", "interval", httpQueryResource.Spec.PollInterval)
+			return ctrl.Result{RequeueAfter: time.Minute * 5}, nil
+		}
+		log.V(1).Info("Scheduling next reconciliation", "interval", duration)
+		result.RequeueAfter = duration
+	}
+
+	return result, err
+}
+
+// handleDeletion handles cleanup when an HTTPQueryResource is being deleted
+func (r *HTTPQueryResourceReconciler) handleDeletion(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource) (ctrl.Result, error) {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
+	log.Info("Handling deletion of HTTPQueryResource")
+
+	// Delete all managed resources
+	if err := r.deleteOwnedResources(ctx, httpQueryResource); err != nil {
+		log.Error(err, "Failed to delete owned resources")
+		return ctrl.Result{}, err
+	}
+
+	// Remove finalizer
+	controllerutil.RemoveFinalizer(httpQueryResource, HTTPQueryFinalizer)
+	if err := r.Update(ctx, httpQueryResource); err != nil {
+		log.Error(err, "Failed to remove finalizer")
+		return ctrl.Result{}, err
+	}
+
+	log.Info("Successfully deleted HTTPQueryResource")
+	return ctrl.Result{}, nil
+}
+
+// setCondition sets or updates a condition on the HTTPQueryResource status
+func (r *HTTPQueryResourceReconciler) setCondition(httpQueryResource *httpv1alpha1.HTTPQueryResource, conditionType string, status metav1.ConditionStatus, reason, message string) {
+	condition := metav1.Condition{
+		Type:               conditionType,
+		Status:             status,
+		LastTransitionTime: metav1.Now(),
+		Reason:             reason,
+		Message:            message,
+	}
+
+	// Find existing condition
+	for i, existingCondition := range httpQueryResource.Status.Conditions {
+		if existingCondition.Type == conditionType {
+			// Only update if status changed
+			if existingCondition.Status != status {
+				httpQueryResource.Status.Conditions[i] = condition
+			} else {
+				// Update message and reason even if status is the same
+				httpQueryResource.Status.Conditions[i].Message = message
+				httpQueryResource.Status.Conditions[i].Reason = reason
+			}
+			return
+		}
+	}
+
+	// Add new condition
+	httpQueryResource.Status.Conditions = append(httpQueryResource.Status.Conditions, condition)
+}
+
+// reconcileResources performs the main reconciliation logic
+func (r *HTTPQueryResourceReconciler) reconcileResources(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, httpClient util.HTTPClient) (ctrl.Result, error) {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
+
+	// Create HTTP config from HTTPQueryResource
+	httpConfig := util.HTTPConfig{
+		URL:          httpQueryResource.Spec.HTTP.URL,
+		Method:       httpQueryResource.Spec.HTTP.Method,
+		Headers:      httpQueryResource.Spec.HTTP.Headers,
+		Body:         httpQueryResource.Spec.HTTP.Body,
+		ResponsePath: httpQueryResource.Spec.HTTP.ResponsePath,
+	}
+
+	// Set authentication config if provided
+	if httpQueryResource.Spec.HTTP.AuthenticationRef != nil {
+		auth := httpQueryResource.Spec.HTTP.AuthenticationRef
+		httpConfig.AuthType = auth.Type
+		httpConfig.AuthConfig = map[string]string{
+			"secretName":      auth.Name,
+			"secretNamespace": auth.Namespace,
+			"usernameKey":     auth.UsernameKey,
+			"passwordKey":     auth.PasswordKey,
+			"tokenKey":        auth.TokenKey,
+			"apikeyKey":       auth.APIKeyKey,
+			"apikeyHeader":    auth.APIKeyHeader,
+		}
+	}
+
+	// Execute HTTP request
+	log.Info("Executing HTTP request", "url", httpConfig.URL)
+	items, err := httpClient.Execute(ctx, httpConfig)
+	if err != nil {
+		log.Error(err, "Failed to execute HTTP request")
+		return ctrl.Result{}, err
+	}
+
+	// Process response and apply resources
+	resources, err := r.processHTTPResponse(ctx, httpQueryResource, items)
+	if err != nil {
+		log.Error(err, "Failed to process HTTP response")
+		return ctrl.Result{}, err
+	}
+
+	// Apply the resources to the cluster
+	for _, resource := range resources {
+		if err := r.applyResource(ctx, httpQueryResource, resource); err != nil {
+			log.Error(err, "Failed to apply resource", "resource", resource.GetName())
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Clean up resources that are no longer in the response
+	if httpQueryResource.Spec.Prune != nil && *httpQueryResource.Spec.Prune {
+		if err := r.cleanupUnmanagedResources(ctx, httpQueryResource, resources); err != nil {
+			log.Error(err, "Failed to cleanup unmanaged resources")
+			return ctrl.Result{}, err
+		}
+	}
+
+	// Execute status update callback if configured
+	if httpQueryResource.Spec.StatusUpdate != nil {
+		statusConfig := util.HTTPStatusUpdateConfig{
+			URL:          httpQueryResource.Spec.StatusUpdate.URL,
+			Method:       httpQueryResource.Spec.StatusUpdate.Method,
+			Headers:      httpQueryResource.Spec.StatusUpdate.Headers,
+			BodyTemplate: httpQueryResource.Spec.StatusUpdate.BodyTemplate,
+		}
+
+		// Set authentication config for status update if provided
+		if httpQueryResource.Spec.StatusUpdate.AuthenticationRef != nil {
+			auth := httpQueryResource.Spec.StatusUpdate.AuthenticationRef
+			statusConfig.AuthType = auth.Type
+			statusConfig.AuthConfig = map[string]string{
+				"secretName":      auth.Name,
+				"secretNamespace": auth.Namespace,
+				"usernameKey":     auth.UsernameKey,
+				"passwordKey":     auth.PasswordKey,
+				"tokenKey":        auth.TokenKey,
+				"apikeyKey":       auth.APIKeyKey,
+				"apikeyHeader":    auth.APIKeyHeader,
+			}
+		}
+
+		if err := httpClient.ExecuteStatusUpdate(ctx, statusConfig, httpQueryResource); err != nil {
+			log.Error(err, "Failed to execute status update")
+			// Don't fail reconciliation for status update errors
+		}
+	}
+
+	log.Info("Successfully reconciled HTTPQueryResource", "resourceCount", len(resources))
+	return ctrl.Result{}, nil
+}
+
+// processHTTPResponse processes the HTTP response and converts it to Kubernetes resources
+func (r *HTTPQueryResourceReconciler) processHTTPResponse(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, items []util.ItemResult) ([]*unstructured.Unstructured, error) {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
+
+	var resources []*unstructured.Unstructured
+
+	// Process each item from the HTTP response
+	for i, item := range items {
+		// Process template to create Kubernetes resource
+		tmpl, err := template.New("resource").Funcs(sprig.TxtFuncMap()).Parse(httpQueryResource.Spec.Template)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse template: %w", err)
+		}
+
+		// Template data includes the item data and index
+		templateData := map[string]interface{}{
+			"Item":  item,
+			"Index": i,
+		}
+
+		var buf bytes.Buffer
+		if err := tmpl.Execute(&buf, templateData); err != nil {
+			return nil, fmt.Errorf("failed to execute template for item %d: %w", i, err)
+		}
+
+		// Parse the generated YAML/JSON into Kubernetes resources
+		itemResources, err := r.parseResources(buf.String())
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse resources for item %d: %w", i, err)
+		}
+
+		resources = append(resources, itemResources...)
+	}
+
+	log.Info("Processed HTTP response", "itemCount", len(items), "resourceCount", len(resources))
+	return resources, nil
+}
+
+// parseResources parses YAML/JSON string into Kubernetes resources
+func (r *HTTPQueryResourceReconciler) parseResources(data string) ([]*unstructured.Unstructured, error) {
+	var resources []*unstructured.Unstructured
+
+	// Split by YAML document separator
+	docs := strings.Split(data, "---")
+	for _, doc := range docs {
+		doc = strings.TrimSpace(doc)
+		if doc == "" {
+			continue
+		}
+
+		// Try to parse as JSON first, then YAML
+		var obj map[string]interface{}
+		if err := json.Unmarshal([]byte(doc), &obj); err != nil {
+			if err := yaml.Unmarshal([]byte(doc), &obj); err != nil {
+				return nil, fmt.Errorf("failed to parse document as JSON or YAML: %w", err)
+			}
+		}
+
+		if len(obj) == 0 {
+			continue
+		}
+
+		resource := &unstructured.Unstructured{Object: obj}
+		resources = append(resources, resource)
+	}
+
+	return resources, nil
+}
+
+// applyResource applies a single resource to the cluster
+func (r *HTTPQueryResourceReconciler) applyResource(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, resource *unstructured.Unstructured) error {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name, "resource", resource.GetName())
+
+	// Set namespace if not specified and HTTPQueryResource is namespaced
+	if resource.GetNamespace() == "" && httpQueryResource.GetNamespace() != "" {
+		resource.SetNamespace(httpQueryResource.GetNamespace())
+	}
+
+	// Add owner reference
+	if err := controllerutil.SetControllerReference(httpQueryResource, resource, r.Scheme); err != nil {
+		return fmt.Errorf("failed to set controller reference: %w", err)
+	}
+
+	// Add managed-by label
+	labels := resource.GetLabels()
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[ManagedByLabel] = ControllerName
+	resource.SetLabels(labels)
+
+	// Try to get existing resource
+	existing := &unstructured.Unstructured{}
+	existing.SetAPIVersion(resource.GetAPIVersion())
+	existing.SetKind(resource.GetKind())
+	
+	err := r.Get(ctx, types.NamespacedName{
+		Name:      resource.GetName(),
+		Namespace: resource.GetNamespace(),
+	}, existing)
+
+	if err != nil && apierrors.IsNotFound(err) {
+		// Create new resource
+		log.Info("Creating new resource")
+		if err := r.Create(ctx, resource); err != nil {
+			return fmt.Errorf("failed to create resource: %w", err)
+		}
+	} else if err != nil {
+		return fmt.Errorf("failed to get existing resource: %w", err)
+	} else {
+		// Update existing resource
+		log.Info("Updating existing resource")
+		resource.SetResourceVersion(existing.GetResourceVersion())
+		if err := r.Update(ctx, resource); err != nil {
+			return fmt.Errorf("failed to update resource: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// deleteOwnedResources deletes all resources owned by the HTTPQueryResource
+func (r *HTTPQueryResourceReconciler) deleteOwnedResources(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource) error {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
+
+	// List all resources with our managed-by label
+	for _, gvk := range r.OwnedGVKs {
+		list := &unstructured.UnstructuredList{}
+		list.SetAPIVersion(gvk.GroupVersion().String())
+		list.SetKind(gvk.Kind + "List")
+
+		listOpts := []client.ListOption{
+			client.InNamespace(httpQueryResource.GetNamespace()),
+			client.MatchingLabels{ManagedByLabel: ControllerName},
+		}
+
+		if err := r.List(ctx, list, listOpts...); err != nil {
+			log.Error(err, "Failed to list owned resources", "gvk", gvk.String())
+			continue
+		}
+
+		for _, item := range list.Items {
+			// Check if this resource is owned by our HTTPQueryResource
+			for _, ownerRef := range item.GetOwnerReferences() {
+				if ownerRef.UID == httpQueryResource.GetUID() {
+					log.Info("Deleting owned resource", "resource", item.GetName(), "gvk", gvk.String())
+					if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+						log.Error(err, "Failed to delete owned resource", "resource", item.GetName())
+					}
+					break
+				}
+			}
+		}
+	}
+
+	return nil
+}
+
+// cleanupUnmanagedResources removes resources that are no longer managed
+func (r *HTTPQueryResourceReconciler) cleanupUnmanagedResources(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, currentResources []*unstructured.Unstructured) error {
+	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
+
+	// Create a set of current resource names for quick lookup
+	currentResourceNames := make(map[string]bool)
+	for _, resource := range currentResources {
+		key := fmt.Sprintf("%s/%s/%s", resource.GetAPIVersion(), resource.GetKind(), resource.GetName())
+		currentResourceNames[key] = true
+	}
+
+	// List all resources with our managed-by label
+	for _, gvk := range r.OwnedGVKs {
+		list := &unstructured.UnstructuredList{}
+		list.SetAPIVersion(gvk.GroupVersion().String())
+		list.SetKind(gvk.Kind + "List")
+
+		listOpts := []client.ListOption{
+			client.InNamespace(httpQueryResource.GetNamespace()),
+			client.MatchingLabels{ManagedByLabel: ControllerName},
+		}
+
+		if err := r.List(ctx, list, listOpts...); err != nil {
+			log.Error(err, "Failed to list managed resources", "gvk", gvk.String())
+			continue
+		}
+
+		for _, item := range list.Items {
+			// Check if this resource is owned by our HTTPQueryResource
+			isOwned := false
+			for _, ownerRef := range item.GetOwnerReferences() {
+				if ownerRef.UID == httpQueryResource.GetUID() {
+					isOwned = true
+					break
+				}
+			}
+
+			if !isOwned {
+				continue
+			}
+
+			// Check if this resource is still in the current set
+			key := fmt.Sprintf("%s/%s/%s", item.GetAPIVersion(), item.GetKind(), item.GetName())
+			if !currentResourceNames[key] {
+				log.Info("Deleting unmanaged resource", "resource", item.GetName(), "gvk", gvk.String())
+				if err := r.Delete(ctx, &item); err != nil && !apierrors.IsNotFound(err) {
+					log.Error(err, "Failed to delete unmanaged resource", "resource", item.GetName())
+				}
+			}
+		}
+	}
+
+	return nil
 }
 
 // SetupWithManager sets up the controller with the Manager.
 func (r *HTTPQueryResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&httpv1alpha1.HTTPQueryResource{}).
-		Complete(r)
+	controller := ctrl.NewControllerManagedBy(mgr).
+		For(&httpv1alpha1.HTTPQueryResource{})
+
+	// Watch owned resources if GVKs are specified
+	for _, gvk := range r.OwnedGVKs {
+		u := &unstructured.Unstructured{}
+		u.SetAPIVersion(gvk.GroupVersion().String())
+		u.SetKind(gvk.Kind)
+		
+		controller = controller.Owns(u)
+	}
+
+	return controller.Complete(r)
 }
 
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches specific GVKs.
-func (r *HTTPQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, gvks []schema.GroupVersionKind) error {
-	return ctrl.NewControllerManagedBy(mgr).
-		For(&httpv1alpha1.HTTPQueryResource{}).
-		Complete(r)
+func (r *HTTPQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
+	r.OwnedGVKs = ownedGVKs // Store the GVKs for use in reconciliation
+	
+	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
+		For(&httpv1alpha1.HTTPQueryResource{})
+
+	// Custom event handler for owned resources
+	for _, gvk := range ownedGVKs {
+		u := &unstructured.Unstructured{}
+		u.SetGroupVersionKind(gvk)
+		controllerBuilder = controllerBuilder.Owns(u, builder.WithPredicates(
+			statusChangePredicate(),
+			predicate.ResourceVersionChangedPredicate{},
+			predicate.GenerationChangedPredicate{},
+			predicate.AnnotationChangedPredicate{},
+			predicate.LabelChangedPredicate{},
+		))
+	}
+
+	return controllerBuilder.Complete(r)
+}
+
+// statusChangePredicate returns a predicate that triggers on various resource changes
+func statusChangePredicate() predicate.Predicate {
+	return predicate.Funcs{
+		UpdateFunc: func(e event.UpdateEvent) bool {
+			// Always trigger on update (including status changes)
+			return true
+		},
+		CreateFunc:  func(e event.CreateEvent) bool { return true },
+		DeleteFunc:  func(e event.DeleteEvent) bool { return false },
+		GenericFunc: func(e event.GenericEvent) bool { return false },
+	}
 }
