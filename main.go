@@ -23,7 +23,7 @@ import (
 	webhookserver "sigs.k8s.io/controller-runtime/pkg/webhook" // Corrected import path
 
 	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1" // Adjust import path
-	"github.com/konnektr-io/http-query-operator/internal/controller"           // Adjust import path
+	"github.com/konnektr-io/http-query-operator/internal/controller"       // Adjust import path
 	"github.com/konnektr-io/http-query-operator/internal/util"
 	//+kubebuilder:scaffold:imports
 )
