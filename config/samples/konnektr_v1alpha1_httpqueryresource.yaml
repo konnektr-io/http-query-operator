@@ -13,7 +13,7 @@ spec:
     headers:
       Accept: "application/json"
       User-Agent: "http-query-operator/1.0"
-    responsePath: "$" # Root array
+    responsePath: "" # Root array
   template: |
     apiVersion: v1
     kind: ConfigMap
@@ -70,7 +70,7 @@ spec:
     #   name: api-credentials
     #   type: bearer
     #   tokenKey: token
-    responsePath: "$" # Posts are in root array
+    responsePath: "" # Posts are in root array
   template: |
     apiVersion: apps/v1
     kind: Deployment
@@ -148,8 +148,8 @@ spec:
     headers:
       Accept: "application/json"
     # Extract nested data if response was wrapped like: {"data": {"users": [...]}}
-    # For JSONPlaceholder, users are at root, so we use "$"
-    responsePath: "$"
+    # For JSONPlaceholder, users are at root
+    responsePath: ""
   template: |
     apiVersion: v1
     kind: Service
@@ -205,7 +205,7 @@ spec:
     #   type: apikey
     #   apikeyKey: apikey
     #   apikeyHeader: "X-API-Key"  # Custom header name
-    responsePath: "$"
+    responsePath: ""
   template: |
     apiVersion: v1
     kind: ConfigMap
@@ -251,7 +251,7 @@ spec:
     headers:
       Accept: "application/json"
       User-Agent: "http-query-operator/1.0"
-    responsePath: "$.data"  # Extract from {"data": [...]} response
+    responsePath: "data"  # Extract from {"data": [...]} response
     authenticationRef:
       name: oauth2-api-credentials
       type: oauth2

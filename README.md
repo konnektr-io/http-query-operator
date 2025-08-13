@@ -166,7 +166,7 @@ spec:
       Accept: "application/json"
       User-Agent: "http-query-operator"
     # Optional: JSONPath to extract array data from response
-    responsePath: "$.users"
+    responsePath: "users"
     # Optional: Authentication
     authenticationRef:
       name: api-credentials
@@ -249,7 +249,7 @@ spec:
     method: "GET"
     headers:
       Authorization: "Bearer ${TOKEN}"
-    responsePath: "$.applications"
+    responsePath: "applications"
     authenticationRef:
       name: api-credentials
       type: bearer
@@ -319,7 +319,7 @@ spec:
     method: "GET"
     headers:
       Accept: "application/json"
-    responsePath: "$.data"  # Extract from {"data": [...]} response
+    responsePath: "data"  # Extract from {"data": [...]} response
     authenticationRef:
       name: oauth2-credentials
       type: oauth2

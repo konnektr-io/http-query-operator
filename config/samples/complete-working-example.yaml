@@ -47,7 +47,7 @@ spec:
     #   tokenKey: token
     
     # Response is an array at root level
-    responsePath: "$"
+    responsePath: ""
   
   # Template creates a Deployment for each user
   template: |
@@ -181,7 +181,7 @@ spec:
     method: GET
     headers:
       Accept: "application/json"
-    responsePath: "$"
+    responsePath: ""
   template: |
     apiVersion: v1
     kind: Service
