@@ -791,6 +791,9 @@ spec:
 					if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
 						// Parse and validate the request body
 						var body map[string]interface{}
+						if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
+							fmt.Printf("DEBUG: status update body: %q\n", req.Body)
+						}
 						g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
 						g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
 						g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
