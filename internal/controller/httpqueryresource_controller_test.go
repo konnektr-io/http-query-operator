@@ -733,13 +733,77 @@ data:
 					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 				})
 
-		// TODO: Placeholder for template error test
-		XIt("should handle template rendering errors gracefully", func() {
-			// This test will verify:
-			// - Invalid templates don't crash the controller
-			// - Template execution errors are reported in status
-			// - Partial failures don't affect other items
-		})
+				It("should handle template rendering errors gracefully", func() {
+					ctx := context.Background()
+
+					mockServer := NewMockHTTPServer()
+					defer mockServer.Close()
+
+					// Response with two items, one will cause a template error
+					mockServer.SetResponse("/template-error", MockResponse{
+						StatusCode: 200,
+						Headers:    map[string]string{"Content-Type": "application/json"},
+						Body: `[
+							{"id": 1, "username": "gooduser", "email": "good@example.com"},
+							{"id": 2, "username": "baduser"}
+						]`,
+					})
+
+					// Template tries to access .Item.email, which is missing for id=2
+					hqr := &httpv1alpha1.HTTPQueryResource{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "template-error-hqr",
+							Namespace: ResourceNamespace,
+						},
+						Spec: httpv1alpha1.HTTPQueryResourceSpec{
+							PollInterval: "2s",
+							HTTP: httpv1alpha1.HTTPSpec{
+								URL:    mockServer.URL() + "/template-error",
+								Method: "GET",
+								Headers: map[string]string{
+									"Accept": "application/json",
+								},
+								ResponsePath: "$",
+							},
+							Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: template-cm-{{ .Item.id }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"\n  email: "{{ .Item.email }}"`,
+						},
+					}
+					Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+					lookupKey := types.NamespacedName{Name: "template-error-hqr", Namespace: ResourceNamespace}
+
+					// Should report a template error in status
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						found := false
+						for _, cond := range created.Status.Conditions {
+							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
+								(strings.Contains(cond.Reason, "TemplateError") || strings.Contains(cond.Message, "template")) {
+								found = true
+							}
+						}
+						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with template error")
+					}, timeout, interval).Should(Succeed())
+
+					// The good item should still be processed (partial failure)
+					cmLookup := types.NamespacedName{Name: "template-cm-1", Namespace: ResourceNamespace}
+					createdCM := &corev1.ConfigMap{}
+					Eventually(func(g Gomega) {
+						g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+						g.Expect(createdCM.Data).To(HaveKeyWithValue("username", "gooduser"))
+						g.Expect(createdCM.Data).To(HaveKeyWithValue("email", "good@example.com"))
+					}, timeout, interval).Should(Succeed())
+
+					// The bad item should not create a ConfigMap
+					badCMLookup := types.NamespacedName{Name: "template-cm-2", Namespace: ResourceNamespace}
+					Consistently(func() error {
+						return k8sClient.Get(ctx, badCMLookup, &corev1.ConfigMap{})
+					}, time.Second*5, interval).ShouldNot(Succeed())
+
+					// Clean up
+					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+				})
 	})
 
 	Describe("HTTPQueryResource finalizer cleanup logic", func() {
