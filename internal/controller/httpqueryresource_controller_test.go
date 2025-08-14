@@ -14,7 +14,6 @@ import (
 	"time"
 
 	appsv1 "k8s.io/api/apps/v1"
-	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
@@ -738,7 +737,7 @@ data:
 	"resource_name": "{{ .Resource.metadata.name }}",
 	"resource_kind": "{{ .Resource.kind }}",
 	"original_item": {{ .Item | toJson }},
-	"replicas": {{ .Resource.status.replicas }},
+	"replicas": {{ .Resource.status.availableReplicas | default 0 }},
 	"timestamp": '{{ now | date "2006-01-02T15:04:05Z07:00" }}"
 }`,
 					},
@@ -775,13 +774,34 @@ spec:
 				g.Expect(err).ToNot(HaveOccurred())
 			}, timeout, interval).Should(Succeed())
 
+
 			// Patch the Deployment status to simulate readiness
+			createdDeploy.Status.Replicas = 1
+			createdDeploy.Status.ReadyReplicas = 1
+			createdDeploy.Status.AvailableReplicas = 1
+			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
+
+			// Wait for the Deployment to become available (ready)
 			Eventually(func(g Gomega) {
-				// Patch status: set status.replicas = 1, status.readyReplicas = 1
-				patch := []byte(`{"status":{"replicas":1,"readyReplicas":1}}`)
-				err := k8sClient.Status().Patch(ctx, createdDeploy, client.RawPatch(types.MergePatchType, patch))
-				g.Expect(err).ToNot(HaveOccurred())
-			}, timeout, interval).Should(Succeed())
+				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
+			}, timeout*2, interval).Should(Succeed())
+
+			// Wait for the parent hqr status to be updated
+			lookupKey := types.NamespacedName{Name: "deploy-hqr", Namespace: ResourceNamespace}
+			created := &httpv1alpha1.HTTPQueryResource{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				found := false
+				for _, cond := range created.Status.Conditions {
+					if cond.Reason == "Success" {
+						found = true
+					}
+				}
+				if !found {
+					fmt.Printf("Current conditions: %+v\n", created.Status.Conditions)
+				}
+				g.Expect(found).To(BeTrue())
+			}, timeout*2, interval).Should(Succeed())
 
 			// Wait for the status update request to be sent
 			Eventually(func(g Gomega) {
