@@ -827,13 +827,92 @@ spec:
 	})
 
 	Describe("HTTPQueryResource with OAuth2 authentication", func() {
-		// TODO: Placeholder for OAuth2 test
-		XIt("should authenticate using OAuth2 client credentials flow", func() {
-			// This test will verify:
-			// - OAuth2 token acquisition works
-			// - Tokens are included in HTTP requests
-			// - Token refresh works when tokens expire
-			// - Multiple scopes can be requested
+		It("should authenticate using OAuth2 client credentials flow", func() {
+			ctx := context.Background()
+
+			// Mock OAuth2 token endpoint
+			var tokenRequestCount int
+			tokenValue := "test-oauth2-token-abc123"
+			oauth2Server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/oauth2/token" && r.Method == "POST" {
+					tokenRequestCount++
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(200)
+					w.Write([]byte(`{"access_token": "` + tokenValue + `", "token_type": "Bearer", "expires_in": 60}`))
+					return
+				}
+				w.WriteHeader(404)
+				w.Write([]byte(`{"error": "not found"}`))
+			}))
+			defer oauth2Server.Close()
+
+			// Mock protected API endpoint
+			var lastAuthHeader string
+			apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				lastAuthHeader = r.Header.Get("Authorization")
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(200)
+				w.Write([]byte(`[{"id": 1, "username": "oauth2-user", "email": "oauth2@example.com"}]`))
+			}))
+			defer apiServer.Close()
+
+			// Create the HTTPQueryResource with OAuth2 config
+			hqr := &httpv1alpha1.HTTPQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oauth2-hqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					HTTP: httpv1alpha1.HTTPSpec{
+						URL:    apiServer.URL + "/api/data",
+						Method: "GET",
+						Headers: map[string]string{
+							"Accept": "application/json",
+						},
+						ResponsePath: "$",
+						OAuth2: &httpv1alpha1.OAuth2Config{
+							TokenURL:     oauth2Server.URL + "/oauth2/token",
+							ClientID:     "test-client-id",
+							ClientSecret: "test-client-secret",
+							Scopes:       []string{"read:data"},
+						},
+					},
+					Template: `apiVersion: v1
+	kind: ConfigMap
+	metadata:
+	  name: oauth2-cm-{{ .Item.id }}
+	  namespace: default
+	data:
+	  username: "{{ .Item.username }}"
+	  email: "{{ .Item.email }}"
+	  authenticated: "true"`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+			// Wait for the ConfigMap to be created
+			cmLookup := types.NamespacedName{Name: "oauth2-cm-1", Namespace: ResourceNamespace}
+			createdCM := &corev1.ConfigMap{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+				g.Expect(createdCM.Data).To(HaveKeyWithValue("username", "oauth2-user"))
+				g.Expect(createdCM.Data).To(HaveKeyWithValue("authenticated", "true"))
+			}, timeout, interval).Should(Succeed())
+
+			// Verify that the Authorization header was set with the OAuth2 token
+			Eventually(func(g Gomega) {
+				g.Expect(lastAuthHeader).To(Equal("Bearer " + tokenValue))
+			}, timeout, interval).Should(Succeed())
+
+			// Verify that the token endpoint was called at least once
+			Expect(tokenRequestCount).To(BeNumerically(">=", 1))
+
+			// Clean up
+			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+			apiServer.Close()
+			oauth2Server.Close()
 		})
 	})
 })
