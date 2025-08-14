@@ -714,35 +714,35 @@ data:
 
 			   // Create the HTTPQueryResource with Deployment template and status update config
 			   hqr := &httpv1alpha1.HTTPQueryResource{
-				   ObjectMeta: metav1.ObjectMeta{
-					   Name:      "deploy-hqr",
-					   Namespace: ResourceNamespace,
-				   },
-				   Spec: httpv1alpha1.HTTPQueryResourceSpec{
-					   PollInterval: "10s",
-					   HTTP: httpv1alpha1.HTTPSpec{
-						   URL:    mockServer.URL() + "/deployments",
-						   Method: "GET",
-						   Headers: map[string]string{
+				   	ObjectMeta: metav1.ObjectMeta{
+					   	Name:      "deploy-hqr",
+					   	Namespace: ResourceNamespace,
+				   	},
+				   	Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					   	PollInterval: "10s",
+					   	HTTP: httpv1alpha1.HTTPSpec{
+						   	URL:    mockServer.URL() + "/deployments",
+						   	Method: "GET",
+						   	Headers: map[string]string{
 							   "Accept": "application/json",
-						   },
-						   ResponsePath: "$",
-					   },
-					   StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
-						   URL:    mockServer.URL() + "/status-updates",
-						   Method: "POST",
-						   Headers: map[string]string{
+						   	},
+						   	ResponsePath: "$",
+					   	},
+					   	StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
+						   	URL:    mockServer.URL() + "/status-updates",
+						   	Method: "POST",
+						   	Headers: map[string]string{
 							   "Content-Type": "application/json",
-						   },
-						   BodyTemplate: `{
+						   	},
+						   	BodyTemplate: `{
 	  "resource_name": "{{ .Resource.metadata.name }}",
 	  "resource_kind": "{{ .Resource.kind }}",
 	  "original_item": {{ .Item | toJson }},
 	  "replicas": {{ .Resource.status.replicas }},
 	  "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
 	}`,
-					   },
-					   Template: `apiVersion: apps/v1
+						},
+						Template: `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Item.name }}
@@ -753,15 +753,15 @@ spec:
     matchLabels:
       app: {{ .Item.name }}
   template:
-	metadata:
+    metadata:
       labels:
-		app: {{ .Item.name }}
-	spec:
-	  containers:
-	  - name: nginx
-	    image: nginx:1.14.2
-	    ports:
-	    - containerPort: 80`,
+        app: {{ .Item.name }}
+    spec:
+      containers:
+      - name: nginx
+        image: nginx:1.14.2
+        ports:
+        - containerPort: 80`,
 				   },
 			   }
 			   Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
