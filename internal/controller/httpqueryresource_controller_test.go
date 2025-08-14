@@ -738,7 +738,7 @@ data:
 	"resource_kind": "{{ .Resource.kind }}",
 	"original_item": {{ .Item | toJson }},
 	"replicas": {{ .Resource.status.availableReplicas | default 0 }},
-	"timestamp": '{{ now | date "2006-01-02T15:04:05Z07:00" }}"
+	"timestamp": "{{ now | date "2006-01-02T15:04:05Z07:00" }}"
 }`,
 					},
 					Template: `apiVersion: apps/v1
