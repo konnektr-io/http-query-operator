@@ -787,6 +787,20 @@ spec:
 				g.Expect(updated.Status.AvailableReplicas).To(Equal(int32(1)))
 			}, timeout, interval).Should(Succeed())
 
+			// Wait for the parent HTTPQueryResource status to be updated to Success
+			Eventually(func(g Gomega) {
+				lookupKey := types.NamespacedName{Name: "deploy-hqr", Namespace: ResourceNamespace}
+				created := &httpv1alpha1.HTTPQueryResource{}
+				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+				found := false
+				for _, cond := range created.Status.Conditions {
+					if cond.Reason == "Success" {
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue())
+			}, timeout*2, interval).Should(Succeed())
+
 			// Wait for the Deployment to become available (ready)
 			Eventually(func(g Gomega) {
 				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
