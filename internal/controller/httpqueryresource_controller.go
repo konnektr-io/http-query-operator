@@ -445,23 +445,6 @@ func (r *HTTPQueryResourceReconciler) cleanupUnmanagedResources(ctx context.Cont
 	return nil
 }
 
-// SetupWithManager sets up the controller with the Manager.
-func (r *HTTPQueryResourceReconciler) SetupWithManager(mgr ctrl.Manager) error {
-	controller := ctrl.NewControllerManagedBy(mgr).
-		For(&httpv1alpha1.HTTPQueryResource{})
-
-	// Watch owned resources if GVKs are specified
-	for _, gvk := range r.OwnedGVKs {
-		u := &unstructured.Unstructured{}
-		u.SetAPIVersion(gvk.GroupVersion().String())
-		u.SetKind(gvk.Kind)
-		
-		controller = controller.Owns(u)
-	}
-
-	return controller.Complete(r)
-}
-
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches specific GVKs.
 func (r *HTTPQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
 	r.OwnedGVKs = ownedGVKs // Store the GVKs for use in reconciliation
