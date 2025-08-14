@@ -734,95 +734,95 @@ data:
 				})
 
 				It("should report template syntax errors in status conditions", func() {
-					ctx := context.Background()
-					mockServer := NewMockHTTPServer()
-					defer mockServer.Close()
-					mockServer.SetResponse("/template-syntax-error", MockResponse{
-						StatusCode: 200,
-						Headers:    map[string]string{"Content-Type": "application/json"},
-						Body: `[{"id": 1, "username": "user1"}]`,
-					})
-					// Template with a syntax error
-					hqr := &httpv1alpha1.HTTPQueryResource{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "template-syntax-error-hqr",
-							Namespace: ResourceNamespace,
-						},
-						Spec: httpv1alpha1.HTTPQueryResourceSpec{
-							PollInterval: "2s",
-							HTTP: httpv1alpha1.HTTPSpec{
-								URL:    mockServer.URL() + "/template-syntax-error",
-								Method: "GET",
-								Headers: map[string]string{"Accept": "application/json"},
-								ResponsePath: "$",
-							},
-							Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: syntax-cm-{{ .Item.username | }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"`,
-						},
-					}
-					Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
-					lookupKey := types.NamespacedName{Name: "template-syntax-error-hqr", Namespace: ResourceNamespace}
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						found := false
-						for _, cond := range created.Status.Conditions {
-							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
-								(strings.Contains(cond.Reason, "TemplateError") || strings.Contains(cond.Message, "template")) {
-								found = true
-							}
-						}
-						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with template error")
-					}, timeout, interval).Should(Succeed())
-					// Clean up
-					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-				})
+								ctx := context.Background()
+								mockServer := NewMockHTTPServer()
+								mockServer.SetResponse("/template-syntax-error", MockResponse{
+									StatusCode: 200,
+									Headers:    map[string]string{"Content-Type": "application/json"},
+									Body: `[{"id": 1, "username": "user1"}]`,
+								})
+								// Template with a syntax error
+								hqr := &httpv1alpha1.HTTPQueryResource{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "template-syntax-error-hqr",
+										Namespace: ResourceNamespace,
+									},
+									Spec: httpv1alpha1.HTTPQueryResourceSpec{
+										PollInterval: "2s",
+										HTTP: httpv1alpha1.HTTPSpec{
+											URL:    mockServer.URL() + "/template-syntax-error",
+											Method: "GET",
+											Headers: map[string]string{"Accept": "application/json"},
+											ResponsePath: "$",
+										},
+										Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: syntax-cm-{{ .Item.username | }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"`,
+									},
+								}
+								Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+								lookupKey := types.NamespacedName{Name: "template-syntax-error-hqr", Namespace: ResourceNamespace}
+								Eventually(func(g Gomega) {
+									created := &httpv1alpha1.HTTPQueryResource{}
+									g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+									found := false
+									for _, cond := range created.Status.Conditions {
+										if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
+											(strings.Contains(cond.Reason, "TemplateError") || strings.Contains(cond.Message, "template")) {
+											found = true
+										}
+									}
+									g.Expect(found).To(BeTrue(), "Should have Reconciled=False with template error")
+								}, timeout, interval).Should(Succeed())
+								// Clean up
+								Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+								mockServer.Close()
+							})
 
 				It("should process valid items and skip invalid ones when fields are missing (partial failure)", func() {
-					ctx := context.Background()
-					mockServer := NewMockHTTPServer()
-					defer mockServer.Close()
-					mockServer.SetResponse("/partial-failure", MockResponse{
-						StatusCode: 200,
-						Headers:    map[string]string{"Content-Type": "application/json"},
-						Body: `[
-							{"id": 1, "username": "gooduser", "email": "good@example.com"},
-							{"id": 2, "username": "baduser"}
-						]`,
-					})
-					// Template omits email if missing
-					hqr := &httpv1alpha1.HTTPQueryResource{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "partial-failure-hqr",
-							Namespace: ResourceNamespace,
-						},
-						Spec: httpv1alpha1.HTTPQueryResourceSpec{
-							PollInterval: "2s",
-							HTTP: httpv1alpha1.HTTPSpec{
-								URL:    mockServer.URL() + "/partial-failure",
-								Method: "GET",
-								Headers: map[string]string{"Accept": "application/json"},
-								ResponsePath: "$",
-							},
-							Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: partial-cm-{{ .Item.id }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"\n  {{- if .Item.email }}email: "{{ .Item.email }}"{{- end }}`,
-						},
-					}
-					Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
-					// The good item should be processed
-					cmLookup := types.NamespacedName{Name: "partial-cm-1", Namespace: ResourceNamespace}
-					createdCM := &corev1.ConfigMap{}
-					Eventually(func(g Gomega) {
-						g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
-						g.Expect(createdCM.Data).To(HaveKeyWithValue("username", "gooduser"))
-						g.Expect(createdCM.Data).To(HaveKeyWithValue("email", "good@example.com"))
-					}, timeout, interval).Should(Succeed())
-					// The bad item should be skipped (no ConfigMap)
-					badCMLookup := types.NamespacedName{Name: "partial-cm-2", Namespace: ResourceNamespace}
-					Consistently(func() error {
-						return k8sClient.Get(ctx, badCMLookup, &corev1.ConfigMap{})
-					}, time.Second*5, interval).ShouldNot(Succeed())
-					// Clean up
-					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-				})
+								ctx := context.Background()
+								mockServer := NewMockHTTPServer()
+								mockServer.SetResponse("/partial-failure", MockResponse{
+									StatusCode: 200,
+									Headers:    map[string]string{"Content-Type": "application/json"},
+									Body: `[
+										{"id": 1, "username": "gooduser", "email": "good@example.com"},
+										{"id": 2, "username": "baduser"}
+									]`,
+								})
+								// Template omits email if missing
+								hqr := &httpv1alpha1.HTTPQueryResource{
+									ObjectMeta: metav1.ObjectMeta{
+										Name:      "partial-failure-hqr",
+										Namespace: ResourceNamespace,
+									},
+									Spec: httpv1alpha1.HTTPQueryResourceSpec{
+										PollInterval: "2s",
+										HTTP: httpv1alpha1.HTTPSpec{
+											URL:    mockServer.URL() + "/partial-failure",
+											Method: "GET",
+											Headers: map[string]string{"Accept": "application/json"},
+											ResponsePath: "$",
+										},
+										Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: partial-cm-{{ .Item.id }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"\n  {{- if .Item.email }}email: "{{ .Item.email }}"{{- end }}`,
+									},
+								}
+								Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+								// The good item should be processed
+								cmLookup := types.NamespacedName{Name: "partial-cm-1", Namespace: ResourceNamespace}
+								createdCM := &corev1.ConfigMap{}
+								Eventually(func(g Gomega) {
+									g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+									g.Expect(createdCM.Data).To(HaveKeyWithValue("username", "gooduser"))
+									g.Expect(createdCM.Data).To(HaveKeyWithValue("email", "good@example.com"))
+								}, timeout, interval).Should(Succeed())
+								// The bad item should be skipped (no ConfigMap)
+								badCMLookup := types.NamespacedName{Name: "partial-cm-2", Namespace: ResourceNamespace}
+								Consistently(func() error {
+									return k8sClient.Get(ctx, badCMLookup, &corev1.ConfigMap{})
+								}, time.Second*5, interval).ShouldNot(Succeed())
+								// Clean up
+								Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+								mockServer.Close()
+							})
 	})
 
 	Describe("HTTPQueryResource finalizer cleanup logic", func() {
