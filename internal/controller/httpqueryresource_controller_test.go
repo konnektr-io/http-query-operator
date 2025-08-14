@@ -856,7 +856,7 @@ spec:
 			}))
 			defer apiServer.Close()
 
-			// Create the HTTPQueryResource with OAuth2 config
+			// Create the HTTPQueryResource with OAuth2 authenticationRef config
 			hqr := &httpv1alpha1.HTTPQueryResource{
 				ObjectMeta: metav1.ObjectMeta{
 					Name:      "oauth2-hqr",
@@ -872,11 +872,13 @@ spec:
 							"Accept": "application/json",
 						},
 						ResponsePath: "$",
-						OAuth2: &httpv1alpha1.OAuth2Config{
-							TokenURL:     oauth2Server.URL + "/oauth2/token",
-							ClientID:     "test-client-id",
-							ClientSecret: "test-client-secret",
-							Scopes:       []string{"read:data"},
+						AuthenticationRef: &httpv1alpha1.HTTPAuthenticationRef{
+							Name:      "oauth2-secret", // This would be the name of the secret in a real cluster
+							Type:      "oauth2",
+							TokenURL:  oauth2Server.URL + "/oauth2/token",
+							ClientIDKey:     "clientId",
+							ClientSecretKey: "clientSecret",
+							Scopes:    "read:data",
 						},
 					},
 					Template: `apiVersion: v1
