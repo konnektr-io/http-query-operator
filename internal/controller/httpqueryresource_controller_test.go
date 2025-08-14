@@ -895,14 +895,14 @@ spec:
 						},
 					},
 					Template: `apiVersion: v1
-	kind: ConfigMap
-	metadata:
-	  name: oauth2-cm-{{ .Item.id }}
-	  namespace: default
-	data:
-	  username: "{{ .Item.username }}"
-	  email: "{{ .Item.email }}"
-	  authenticated: "true"`,
+kind: ConfigMap
+metadata:
+  name: oauth2-cm-{{ .Item.id }}
+  namespace: default
+data:
+  username: "{{ .Item.username }}"
+  email: "{{ .Item.email }}"
+  authenticated: "true"`,
 				},
 			}
 			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
