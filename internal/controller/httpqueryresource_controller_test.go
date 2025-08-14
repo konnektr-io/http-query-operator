@@ -689,60 +689,60 @@ data:
 	})
 
 	Describe("HTTPQueryResource deployment management", func() {
-		   It("should create Deployments and send status updates based on deployment readiness", func() {
-			   ctx := context.Background()
+		It("should create Deployments and send status updates based on deployment readiness", func() {
+			ctx := context.Background()
 
-			   // Mock HTTP server for status update endpoint
-			   mockServer := NewMockHTTPServer()
-			   defer mockServer.Close()
+			// Mock HTTP server for status update endpoint
+			mockServer := NewMockHTTPServer()
+			defer mockServer.Close()
 
-			   // Set up response for the main data request (returns a single deployment item)
-			   deploymentResponse := MockResponse{
-				   StatusCode: 200,
-				   Headers:    map[string]string{"Content-Type": "application/json"},
-				   Body:       `[{"name": "test-deploy", "replicas": 1}]`,
-			   }
-			   mockServer.SetResponse("/deployments", deploymentResponse)
+			// Set up response for the main data request (returns a single deployment item)
+			deploymentResponse := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body:       `[{"name": "test-deploy", "replicas": 1}]`,
+			}
+			mockServer.SetResponse("/deployments", deploymentResponse)
 
-			   // Set up response for status update endpoint
-			   statusUpdateResponse := MockResponse{
-				   StatusCode: 200,
-				   Headers:    map[string]string{"Content-Type": "application/json"},
-				   Body:       `{"status": "updated"}`,
-			   }
-			   mockServer.SetResponse("/status-updates", statusUpdateResponse)
+			// Set up response for status update endpoint
+			statusUpdateResponse := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body:       `{"status": "updated"}`,
+			}
+			mockServer.SetResponse("/status-updates", statusUpdateResponse)
 
-			   // Create the HTTPQueryResource with Deployment template and status update config
-			   hqr := &httpv1alpha1.HTTPQueryResource{
-				   	ObjectMeta: metav1.ObjectMeta{
-					   	Name:      "deploy-hqr",
-					   	Namespace: ResourceNamespace,
-				   	},
-				   	Spec: httpv1alpha1.HTTPQueryResourceSpec{
-					   	PollInterval: "10s",
-					   	HTTP: httpv1alpha1.HTTPSpec{
-						   	URL:    mockServer.URL() + "/deployments",
-						   	Method: "GET",
-						   	Headers: map[string]string{
-							   "Accept": "application/json",
-						   	},
-						   	ResponsePath: "$",
-					   	},
-					   	StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
-						   	URL:    mockServer.URL() + "/status-updates",
-						   	Method: "POST",
-						   	Headers: map[string]string{
-							   "Content-Type": "application/json",
-						   	},
-						   	BodyTemplate: `{
+			// Create the HTTPQueryResource with Deployment template and status update config
+			hqr := &httpv1alpha1.HTTPQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "deploy-hqr",
+					Namespace: ResourceNamespace,
+				},
+				Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					PollInterval: "10s",
+					HTTP: httpv1alpha1.HTTPSpec{
+						URL:    mockServer.URL() + "/deployments",
+						Method: "GET",
+						Headers: map[string]string{
+							"Accept": "application/json",
+						},
+						ResponsePath: "$",
+					},
+					StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
+						URL:    mockServer.URL() + "/status-updates",
+						Method: "POST",
+						Headers: map[string]string{
+							"Content-Type": "application/json",
+						},
+						BodyTemplate: `{
 	  "resource_name": "{{ .Resource.metadata.name }}",
 	  "resource_kind": "{{ .Resource.kind }}",
 	  "original_item": {{ .Item | toJson }},
 	  "replicas": {{ .Resource.status.replicas }},
 	  "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
 	}`,
-						},
-						Template: `apiVersion: apps/v1
+					},
+					Template: `apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: {{ .Item.name }}
@@ -762,50 +762,50 @@ spec:
         image: nginx:1.14.2
         ports:
         - containerPort: 80`,
-				   },
-			   }
-			   Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+				},
+			}
+			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
 
-			   // Wait for the Deployment to be created
-			   deployName := "test-deploy"
-			   deployLookup := types.NamespacedName{Name: deployName, Namespace: ResourceNamespace}
-			   createdDeploy := &appsv1.Deployment{}
-			   Eventually(func(g Gomega) {
-				   err := k8sClient.Get(ctx, deployLookup, createdDeploy)
-				   g.Expect(err).ToNot(HaveOccurred())
-			   }, timeout, interval).Should(Succeed())
+			// Wait for the Deployment to be created
+			deployName := "test-deploy"
+			deployLookup := types.NamespacedName{Name: deployName, Namespace: ResourceNamespace}
+			createdDeploy := &appsv1.Deployment{}
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, deployLookup, createdDeploy)
+				g.Expect(err).ToNot(HaveOccurred())
+			}, timeout, interval).Should(Succeed())
 
-			   // Patch the Deployment status to simulate readiness
-			   Eventually(func(g Gomega) {
-				   // Patch status: set status.replicas = 1, status.readyReplicas = 1
-				   patch := []byte(`{"status":{"replicas":1,"readyReplicas":1}}`)
-				   err := k8sClient.Status().Patch(ctx, createdDeploy, client.RawPatch(types.MergePatchType, patch))
-				   g.Expect(err).ToNot(HaveOccurred())
-			   }, timeout, interval).Should(Succeed())
+			// Patch the Deployment status to simulate readiness
+			Eventually(func(g Gomega) {
+				// Patch status: set status.replicas = 1, status.readyReplicas = 1
+				patch := []byte(`{"status":{"replicas":1,"readyReplicas":1}}`)
+				err := k8sClient.Status().Patch(ctx, createdDeploy, client.RawPatch(types.MergePatchType, patch))
+				g.Expect(err).ToNot(HaveOccurred())
+			}, timeout, interval).Should(Succeed())
 
-			   // Wait for the status update request to be sent
-			   Eventually(func(g Gomega) {
-				   requests := mockServer.GetRequests()
-				   found := false
-				   for _, req := range requests {
-					   if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
-						   // Parse and validate the request body
-						   var body map[string]interface{}
-						   g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
-						   g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
-						   g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
-						   g.Expect(body).To(HaveKey("original_item"))
-						   g.Expect(body).To(HaveKeyWithValue("replicas", float64(1)))
-						   g.Expect(body).To(HaveKey("timestamp"))
-						   found = true
-					   }
-				   }
-				   g.Expect(found).To(BeTrue(), "Should have sent a status update request for the Deployment")
-			   }, timeout, interval).Should(Succeed())
+			// Wait for the status update request to be sent
+			Eventually(func(g Gomega) {
+				requests := mockServer.GetRequests()
+				found := false
+				for _, req := range requests {
+					if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
+						// Parse and validate the request body
+						var body map[string]interface{}
+						g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
+						g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
+						g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
+						g.Expect(body).To(HaveKey("original_item"))
+						g.Expect(body).To(HaveKeyWithValue("replicas", float64(1)))
+						g.Expect(body).To(HaveKey("timestamp"))
+						found = true
+					}
+				}
+				g.Expect(found).To(BeTrue(), "Should have sent a status update request for the Deployment")
+			}, timeout, interval).Should(Succeed())
 
-			   // Clean up
-			   Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-		   })
+			// Clean up
+			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+		})
 	})
 
 	Describe("HTTPQueryResource with OAuth2 authentication", func() {
