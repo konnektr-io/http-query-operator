@@ -507,13 +507,16 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		authConfig, err := r.AuthResolver.ResolveAuthenticationConfig(ctx, httpQueryResource.Namespace, httpQueryResource.Spec.StatusUpdate.AuthenticationRef)
 		if err != nil {
 			log.Error(err, "Failed to resolve status update authentication configuration")
+			r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "StatusUpdateFailed", "Failed to resolve status update authentication configuration: "+err.Error())
+			_ = r.Status().Update(ctx, httpQueryResource)
 			return err
 		}
 		statusConfig.AuthType = authConfig.AuthType
 		statusConfig.AuthConfig = authConfig.AuthConfig
 	}
 
-	// Send status updates for each managed resource
+	// Send status updates for each managed resource and track errors
+	hadError := false
 	for _, resource := range resources {
 		// Get the current resource from the cluster to have the latest status
 		currentResource := &unstructured.Unstructured{}
@@ -530,6 +533,7 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 				continue
 			}
 			log.Error(err, "Failed to get current resource for status update", "resource", resource.GetName())
+			hadError = true
 			continue
 		}
 
@@ -554,11 +558,23 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		// Execute status update with enhanced context
 		if err := httpClient.ExecuteStatusUpdate(ctx, statusConfig, templateData); err != nil {
 			log.Error(err, "Failed to execute status update for resource", "resource", resource.GetName())
-			// Continue with other resources even if one fails
+			hadError = true
 			continue
 		}
 
 		log.V(1).Info("Successfully sent status update for resource", "resource", resource.GetName())
+	}
+
+	// Set and persist a status condition on the parent CR
+	if hadError {
+		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "StatusUpdateFailed", "One or more status update callbacks failed")
+	} else {
+		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionTrue, "StatusUpdateSuccess", "All status update callbacks succeeded")
+	}
+	_ = r.Status().Update(ctx, httpQueryResource)
+
+	if hadError {
+		return fmt.Errorf("one or more status update callbacks failed")
 	}
 
 	return nil
