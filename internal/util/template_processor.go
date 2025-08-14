@@ -68,42 +68,53 @@ func (tp *TemplateProcessor) ParseResources(data string) ([]*unstructured.Unstru
 
 // ProcessHTTPResponseToResources processes HTTP response items into Kubernetes resources
 func (tp *TemplateProcessor) ProcessHTTPResponseToResources(templateStr string, items []ItemResult) ([]*unstructured.Unstructured, error) {
-	var allResources []*unstructured.Unstructured
+       var allResources []*unstructured.Unstructured
+       var failedCount int
+       var errorMessages []string
 
-	// Process each item from the HTTP response
-	for i, item := range items {
-		// Template data includes the item data and index
-		templateData := map[string]interface{}{
-			"Item":  item,
-			"Index": i,
-		}
+       // Process each item from the HTTP response
+       for i, item := range items {
+	       templateData := map[string]interface{}{
+		       "Item":  item,
+		       "Index": i,
+	       }
 
-		// Process the template
-		renderedYAML, err := tp.ProcessTemplate(templateStr, templateData)
-		if err != nil {
-			return nil, fmt.Errorf("failed to process template for item %d: %w", i, err)
-		}
+	       // Process the template
+	       renderedYAML, err := tp.ProcessTemplate(templateStr, templateData)
+	       if err != nil {
+		       failedCount++
+		       errorMessages = append(errorMessages, fmt.Sprintf("item %d: template error: %v", i, err))
+		       continue
+	       }
 
-		// Parse the generated YAML/JSON into Kubernetes resources
-		itemResources, err := tp.ParseResources(renderedYAML)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse resources for item %d: %w", i, err)
-		}
+	       // Parse the generated YAML/JSON into Kubernetes resources
+	       itemResources, err := tp.ParseResources(renderedYAML)
+	       if err != nil {
+		       failedCount++
+		       errorMessages = append(errorMessages, fmt.Sprintf("item %d: parse error: %v", i, err))
+		       continue
+	       }
 
-		// Add metadata to track the original item data for status updates
-		itemJSON, _ := json.Marshal(item)
-		for _, resource := range itemResources {
-			// Add annotation with original item data
-			annotations := resource.GetAnnotations()
-			if annotations == nil {
-				annotations = make(map[string]string)
-			}
-			annotations["konnektr.io/original-item"] = string(itemJSON)
-			resource.SetAnnotations(annotations)
-		}
+	       // Add metadata to track the original item data for status updates
+	       itemJSON, _ := json.Marshal(item)
+	       for _, resource := range itemResources {
+		       annotations := resource.GetAnnotations()
+		       if annotations == nil {
+			       annotations = make(map[string]string)
+		       }
+		       annotations["konnektr.io/original-item"] = string(itemJSON)
+		       resource.SetAnnotations(annotations)
+	       }
 
-		allResources = append(allResources, itemResources...)
-	}
+	       allResources = append(allResources, itemResources...)
+       }
 
-	return allResources, nil
+       if len(allResources) == 0 {
+	       return nil, fmt.Errorf("all items failed to process: %v", strings.Join(errorMessages, "; "))
+       }
+       if failedCount > 0 {
+	       // Optionally, log or return a partial error (not fatal)
+	       // return allResources, fmt.Errorf("%d items failed: %v", failedCount, strings.Join(errorMessages, "; "))
+       }
+       return allResources, nil
 }
