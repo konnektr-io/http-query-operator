@@ -830,6 +830,19 @@ spec:
 		It("should authenticate using OAuth2 client credentials flow", func() {
 			ctx := context.Background()
 
+			// Create the Secret for OAuth2 credentials
+			oauth2Secret := &corev1.Secret{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:      "oauth2-secret",
+					Namespace: ResourceNamespace,
+				},
+				Data: map[string][]byte{
+					"clientId":     []byte("test-client-id"),
+					"clientSecret": []byte("test-client-secret"),
+				},
+			}
+			Expect(k8sClient.Create(ctx, oauth2Secret)).To(Succeed())
+
 			// Mock OAuth2 token endpoint
 			var tokenRequestCount int
 			tokenValue := "test-oauth2-token-abc123"
