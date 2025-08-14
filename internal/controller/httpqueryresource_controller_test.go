@@ -735,12 +735,12 @@ data:
 							"Content-Type": "application/json",
 						},
 						BodyTemplate: `{
-	  "resource_name": "{{ .Resource.metadata.name }}",
-	  "resource_kind": "{{ .Resource.kind }}",
-	  "original_item": {{ .Item | toJson }},
-	  "replicas": {{ .Resource.status.replicas }},
-	  "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
-	}`,
+	"resource_name": "{{ .Resource.metadata.name }}",
+	"resource_kind": "{{ .Resource.kind }}",
+	"original_item": {{ .Item | toJson }},
+	"replicas": {{ .Resource.status.replicas }},
+	"timestamp": '{{ now | date "2006-01-02T15:04:05Z07:00" }}"
+}`,
 					},
 					Template: `apiVersion: apps/v1
 kind: Deployment
