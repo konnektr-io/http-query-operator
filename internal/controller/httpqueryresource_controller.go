@@ -119,7 +119,7 @@ func (r *HTTPQueryResourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 
 	// Execute the reconciliation
 	result, err := r.reconcileResources(ctx, httpQueryResource, httpClient)
-	
+
 	// Update conditions based on result
 	if err != nil {
 		log.Error(err, "Failed to reconcile resources")
@@ -218,7 +218,7 @@ func (r *HTTPQueryResourceReconciler) reconcileResources(ctx context.Context, ht
 		if r.AuthResolver == nil {
 			r.AuthResolver = util.NewAuthResolver(r.Client, r.Log)
 		}
-		
+
 		authConfig, err := r.AuthResolver.ResolveAuthenticationConfig(ctx, httpQueryResource.Namespace, httpQueryResource.Spec.HTTP.AuthenticationRef)
 		if err != nil {
 			log.Error(err, "Failed to resolve authentication configuration")
@@ -327,7 +327,7 @@ func (r *HTTPQueryResourceReconciler) applyResource(ctx context.Context, httpQue
 	existing := &unstructured.Unstructured{}
 	existing.SetAPIVersion(resource.GetAPIVersion())
 	existing.SetKind(resource.GetKind())
-	
+
 	err := r.Get(ctx, types.NamespacedName{
 		Name:      resource.GetName(),
 		Namespace: resource.GetNamespace(),
@@ -448,7 +448,7 @@ func (r *HTTPQueryResourceReconciler) cleanupUnmanagedResources(ctx context.Cont
 // SetupWithManagerAndGVKs sets up the controller with the Manager and watches specific GVKs.
 func (r *HTTPQueryResourceReconciler) SetupWithManagerAndGVKs(mgr ctrl.Manager, ownedGVKs []schema.GroupVersionKind) error {
 	r.OwnedGVKs = ownedGVKs // Store the GVKs for use in reconciliation
-	
+
 	controllerBuilder := ctrl.NewControllerManagedBy(mgr).
 		For(&httpv1alpha1.HTTPQueryResource{})
 
@@ -484,11 +484,11 @@ func statusChangePredicate() predicate.Predicate {
 // updateStatusForChildResources sends status updates for managed resources
 func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.Context, httpQueryResource *httpv1alpha1.HTTPQueryResource, resources []*unstructured.Unstructured, httpClient util.HTTPClient) error {
 	log := r.Log.WithValues("httpqueryresource", httpQueryResource.Name)
-	
+
 	if httpQueryResource.Spec.StatusUpdate == nil {
 		return nil
 	}
-	
+
 	// Prepare base status config
 	statusConfig := util.HTTPStatusUpdateConfig{
 		URL:          httpQueryResource.Spec.StatusUpdate.URL,
@@ -496,14 +496,14 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		Headers:      httpQueryResource.Spec.StatusUpdate.Headers,
 		BodyTemplate: httpQueryResource.Spec.StatusUpdate.BodyTemplate,
 	}
-	
+
 	// Resolve authentication for status updates
 	if httpQueryResource.Spec.StatusUpdate.AuthenticationRef != nil {
 		// Initialize AuthResolver if not set
 		if r.AuthResolver == nil {
 			r.AuthResolver = util.NewAuthResolver(r.Client, r.Log)
 		}
-		
+
 		authConfig, err := r.AuthResolver.ResolveAuthenticationConfig(ctx, httpQueryResource.Namespace, httpQueryResource.Spec.StatusUpdate.AuthenticationRef)
 		if err != nil {
 			log.Error(err, "Failed to resolve status update authentication configuration")
@@ -512,18 +512,18 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		statusConfig.AuthType = authConfig.AuthType
 		statusConfig.AuthConfig = authConfig.AuthConfig
 	}
-	
+
 	// Send status updates for each managed resource
 	for _, resource := range resources {
 		// Get the current resource from the cluster to have the latest status
 		currentResource := &unstructured.Unstructured{}
 		currentResource.SetGroupVersionKind(resource.GroupVersionKind())
-		
+
 		err := r.Get(ctx, types.NamespacedName{
 			Name:      resource.GetName(),
 			Namespace: resource.GetNamespace(),
 		}, currentResource)
-		
+
 		if err != nil {
 			if apierrors.IsNotFound(err) {
 				log.V(1).Info("Resource not found for status update, skipping", "resource", resource.GetName())
@@ -532,7 +532,7 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 			log.Error(err, "Failed to get current resource for status update", "resource", resource.GetName())
 			continue
 		}
-		
+
 		// Extract original item data from annotations
 		var originalItem map[string]interface{}
 		annotations := currentResource.GetAnnotations()
@@ -544,22 +544,22 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 				}
 			}
 		}
-		
+
 		// Create enhanced template context with both resource and original item
 		templateData := map[string]interface{}{
 			"Resource": currentResource.Object,
 			"Item":     originalItem,
 		}
-		
+
 		// Execute status update with enhanced context
 		if err := httpClient.ExecuteStatusUpdate(ctx, statusConfig, templateData); err != nil {
 			log.Error(err, "Failed to execute status update for resource", "resource", resource.GetName())
 			// Continue with other resources even if one fails
 			continue
 		}
-		
+
 		log.V(1).Info("Successfully sent status update for resource", "resource", resource.GetName())
 	}
-	
+
 	return nil
 }
