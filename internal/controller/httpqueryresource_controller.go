@@ -120,12 +120,12 @@ func (r *HTTPQueryResourceReconciler) Reconcile(ctx context.Context, req ctrl.Re
 	// Execute the reconciliation
 	result, err := r.reconcileResources(ctx, httpQueryResource, httpClient)
 
-	// Update conditions based on result
+	// Always set ConditionReconciled to True with Reason 'Success' if no error, matching database controller
 	if err != nil {
 		log.Error(err, "Failed to reconcile resources")
 		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "ReconciliationError", err.Error())
 	} else {
-		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionTrue, "ReconciliationSuccessful", "Resources successfully reconciled")
+		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionTrue, "Success", "Successfully reconciled all resources")
 	}
 
 	// Update status
