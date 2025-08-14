@@ -65,6 +65,14 @@ spec:
                         description: Key within the Secret for the API key. Defaults
                           to "apikey".
                         type: string
+                      clientIdKey:
+                        description: Key within the Secret for OAuth2 client ID. Defaults
+                          to "clientId".
+                        type: string
+                      clientSecretKey:
+                        description: Key within the Secret for OAuth2 client secret.
+                          Defaults to "clientSecret".
+                        type: string
                       name:
                         description: Name of the Secret containing authentication
                           details.
@@ -77,17 +85,25 @@ spec:
                         description: Key within the Secret for the password (basic
                           auth). Defaults to "password".
                         type: string
+                      scopes:
+                        description: OAuth2 scopes to request (space-separated). Optional.
+                        type: string
                       tokenKey:
                         description: Key within the Secret for the token (bearer auth).
                           Defaults to "token".
                         type: string
+                      tokenUrl:
+                        description: OAuth2 token endpoint URL for client credentials
+                          flow.
+                        type: string
                       type:
                         description: 'Type of authentication. Supported: basic, bearer,
-                          apikey'
+                          apikey, oauth2'
                         enum:
                         - basic
                         - bearer
                         - apikey
+                        - oauth2
                         type: string
                       usernameKey:
                         description: Key within the Secret for the username (basic
@@ -155,6 +171,14 @@ spec:
                         description: Key within the Secret for the API key. Defaults
                           to "apikey".
                         type: string
+                      clientIdKey:
+                        description: Key within the Secret for OAuth2 client ID. Defaults
+                          to "clientId".
+                        type: string
+                      clientSecretKey:
+                        description: Key within the Secret for OAuth2 client secret.
+                          Defaults to "clientSecret".
+                        type: string
                       name:
                         description: Name of the Secret containing authentication
                           details.
@@ -167,17 +191,25 @@ spec:
                         description: Key within the Secret for the password (basic
                           auth). Defaults to "password".
                         type: string
+                      scopes:
+                        description: OAuth2 scopes to request (space-separated). Optional.
+                        type: string
                       tokenKey:
                         description: Key within the Secret for the token (bearer auth).
                           Defaults to "token".
                         type: string
+                      tokenUrl:
+                        description: OAuth2 token endpoint URL for client credentials
+                          flow.
+                        type: string
                       type:
                         description: 'Type of authentication. Supported: basic, bearer,
-                          apikey'
+                          apikey, oauth2'
                         enum:
                         - basic
                         - bearer
                         - apikey
+                        - oauth2
                         type: string
                       usernameKey:
                         description: Key within the Secret for the username (basic
