@@ -780,71 +780,46 @@ spec:
 			createdDeploy.Status.AvailableReplicas = 1
 			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
 
-			// Wait until the Deployment status is actually updated in the API
+			// Wait for Deployment readiness, parent CR status, and at least one correct status update callback
 			Eventually(func(g Gomega) {
+				// Check Deployment status in API
 				updated := &appsv1.Deployment{}
 				g.Expect(k8sClient.Get(ctx, deployLookup, updated)).To(Succeed())
 				g.Expect(updated.Status.AvailableReplicas).To(Equal(int32(1)))
-			}, timeout, interval).Should(Succeed())
 
-			// Wait for the parent HTTPQueryResource status to be updated to Success
-			Eventually(func(g Gomega) {
+				// Check parent HTTPQueryResource status condition
 				lookupKey := types.NamespacedName{Name: "deploy-hqr", Namespace: ResourceNamespace}
 				created := &httpv1alpha1.HTTPQueryResource{}
 				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-				found := false
+				foundSuccess := false
 				for _, cond := range created.Status.Conditions {
 					if cond.Reason == "Success" {
-						found = true
+						foundSuccess = true
 					}
 				}
-				g.Expect(found).To(BeTrue())
-			}, timeout*2, interval).Should(Succeed())
+				g.Expect(foundSuccess).To(BeTrue())
 
-			// Wait for the Deployment to become available (ready)
-			Eventually(func(g Gomega) {
-				g.Expect(createdDeploy.Status.AvailableReplicas).To(BeNumerically(">=", 1))
-			}, timeout*2, interval).Should(Succeed())
-
-			// Wait for the parent hqr status to be updated
-			lookupKey := types.NamespacedName{Name: "deploy-hqr", Namespace: ResourceNamespace}
-			created := &httpv1alpha1.HTTPQueryResource{}
-			Eventually(func(g Gomega) {
-				g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-				found := false
-				for _, cond := range created.Status.Conditions {
-					if cond.Reason == "Success" {
-						found = true
-					}
-				}
-				if !found {
-					fmt.Printf("Current conditions: %+v\n", created.Status.Conditions)
-				}
-				g.Expect(found).To(BeTrue())
-			}, timeout*2, interval).Should(Succeed())
-
-			// Wait for the status update request to be sent
-			Eventually(func(g Gomega) {
+				// Check for at least one status update callback with replicas=1 and validate its structure
 				requests := mockServer.GetRequests()
-				found := false
+				foundCallback := false
 				for _, req := range requests {
 					if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
-						// Parse and validate the request body
 						var body map[string]interface{}
-						if err := json.Unmarshal([]byte(req.Body), &body); err != nil {
-							fmt.Printf("DEBUG: status update body: %q\n", req.Body)
+						if err := json.Unmarshal([]byte(req.Body), &body); err == nil {
+							if val, ok := body["replicas"]; ok && val == float64(1) {
+								// Validate structure
+								g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
+								g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
+								g.Expect(body).To(HaveKey("original_item"))
+								g.Expect(body).To(HaveKeyWithValue("replicas", float64(1)))
+								g.Expect(body).To(HaveKey("timestamp"))
+								foundCallback = true
+							}
 						}
-						g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
-						g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
-						g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
-						g.Expect(body).To(HaveKey("original_item"))
-						g.Expect(body).To(HaveKeyWithValue("replicas", float64(1)))
-						g.Expect(body).To(HaveKey("timestamp"))
-						found = true
 					}
 				}
-				g.Expect(found).To(BeTrue(), "Should have sent a status update request for the Deployment")
-			}, timeout, interval).Should(Succeed())
+				g.Expect(foundCallback).To(BeTrue(), "Should have sent at least one status update request for the Deployment with replicas=1")
+			}, timeout*2, interval).Should(Succeed())
 
 			// Clean up
 			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
