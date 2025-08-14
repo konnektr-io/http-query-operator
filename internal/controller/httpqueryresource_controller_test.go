@@ -650,7 +650,7 @@ data:
 					Template: `apiVersion: v1
 kind: ConfigMap
 metadata:
-  name: finalizer-cm-{{ .Row.id }}
+  name: finalizer-cm-{{ .Item.id }}
   namespace: default
 data:
   foo: bar`,
