@@ -1,6 +1,7 @@
 package controller
 
 import (
+	// ...existing code...
 	"context"
 	"encoding/json"
 	"fmt"
@@ -11,6 +12,9 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	appsv1 "k8s.io/api/apps/v1"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	httpv1alpha1 "github.com/konnektr-io/http-query-operator/api/v1alpha1"
 	. "github.com/onsi/ginkgo/v2"
@@ -410,7 +414,7 @@ data:
 			// Wait for status update requests to be sent
 			Eventually(func(g Gomega) {
 				requests := mockServer.GetRequests()
-				
+
 				// Filter for status update requests (POST to /status-updates)
 				statusUpdateRequests := []MockRequest{}
 				for _, req := range requests {
@@ -418,35 +422,35 @@ data:
 						statusUpdateRequests = append(statusUpdateRequests, req)
 					}
 				}
-				
+
 				// Should have at least 2 status update requests (one for each user)
 				g.Expect(len(statusUpdateRequests)).To(BeNumerically(">=", 2))
-				
+
 				// Verify the request structure
 				for _, req := range statusUpdateRequests {
 					// Check headers
 					g.Expect(req.Headers).To(HaveKeyWithValue("Content-Type", "application/json"))
-					
+
 					// Parse and validate the request body
 					var body map[string]interface{}
 					g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
-					
+
 					// Verify template was processed correctly
 					g.Expect(body).To(HaveKey("resource_name"))
 					g.Expect(body).To(HaveKey("resource_kind"))
 					g.Expect(body).To(HaveKey("original_item"))
 					g.Expect(body).To(HaveKey("timestamp"))
-					
+
 					// Verify resource information
 					g.Expect(body["resource_kind"]).To(Equal("ConfigMap"))
-					
+
 					// Verify original item contains expected user data
 					originalItem, ok := body["original_item"].(map[string]interface{})
 					g.Expect(ok).To(BeTrue(), "original_item should be an object")
 					g.Expect(originalItem).To(HaveKey("username"))
 					g.Expect(originalItem).To(HaveKey("email"))
 					g.Expect(originalItem).To(HaveKey("role"))
-					
+
 					// Verify timestamp format
 					timestamp, ok := body["timestamp"].(string)
 					g.Expect(ok).To(BeTrue(), "timestamp should be a string")
@@ -578,20 +582,20 @@ data:
 				createdCM := &corev1.ConfigMap{}
 				Eventually(func(g Gomega) {
 					g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
-					
+
 					// Verify labels from nested data
 					labels := createdCM.GetLabels()
 					g.Expect(labels).To(HaveKeyWithValue(ManagedByLabel, ControllerName))
 					g.Expect(labels).To(HaveKeyWithValue("theme", user.theme))
 					g.Expect(labels).To(HaveKeyWithValue("notifications", toString(user.notify)))
-					
+
 					// Verify data extracted from deeply nested fields
 					g.Expect(createdCM.Data).To(HaveKeyWithValue("user-id", toString(user.id)))
 					g.Expect(createdCM.Data).To(HaveKeyWithValue("username", user.username))
 					g.Expect(createdCM.Data).To(HaveKeyWithValue("email", user.email))
 					g.Expect(createdCM.Data).To(HaveKeyWithValue("theme", user.theme))
 					g.Expect(createdCM.Data).To(HaveKeyWithValue("notifications", toString(user.notify)))
-					
+
 					// Verify the full profile JSON is stored correctly
 					g.Expect(createdCM.Data).To(HaveKey("full-profile"))
 					var fullProfile map[string]interface{}
@@ -685,13 +689,123 @@ data:
 	})
 
 	Describe("HTTPQueryResource deployment management", func() {
-		// TODO: Placeholder for deployment test
-		XIt("should create Deployments and send status updates based on deployment readiness", func() {
-			// This test will verify:
-			// - Can create Deployment resources from API data
-			// - Status updates are sent when deployment becomes ready
-			// - Template context includes both original item and resource status
-		})
+		   It("should create Deployments and send status updates based on deployment readiness", func() {
+			   ctx := context.Background()
+
+			   // Mock HTTP server for status update endpoint
+			   mockServer := NewMockHTTPServer()
+			   defer mockServer.Close()
+
+			   // Set up response for the main data request (returns a single deployment item)
+			   deploymentResponse := MockResponse{
+				   StatusCode: 200,
+				   Headers:    map[string]string{"Content-Type": "application/json"},
+				   Body:       `[{"name": "test-deploy", "replicas": 1}]`,
+			   }
+			   mockServer.SetResponse("/deployments", deploymentResponse)
+
+			   // Set up response for status update endpoint
+			   statusUpdateResponse := MockResponse{
+				   StatusCode: 200,
+				   Headers:    map[string]string{"Content-Type": "application/json"},
+				   Body:       `{"status": "updated"}`,
+			   }
+			   mockServer.SetResponse("/status-updates", statusUpdateResponse)
+
+			   // Create the HTTPQueryResource with Deployment template and status update config
+			   hqr := &httpv1alpha1.HTTPQueryResource{
+				   ObjectMeta: metav1.ObjectMeta{
+					   Name:      "deploy-hqr",
+					   Namespace: ResourceNamespace,
+				   },
+				   Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					   PollInterval: "10s",
+					   HTTP: httpv1alpha1.HTTPSpec{
+						   URL:    mockServer.URL() + "/deployments",
+						   Method: "GET",
+						   Headers: map[string]string{
+							   "Accept": "application/json",
+						   },
+						   ResponsePath: "$",
+					   },
+					   StatusUpdate: &httpv1alpha1.HTTPStatusUpdateSpec{
+						   URL:    mockServer.URL() + "/status-updates",
+						   Method: "POST",
+						   Headers: map[string]string{
+							   "Content-Type": "application/json",
+						   },
+						   BodyTemplate: `{
+	  "resource_name": "{{ .Resource.metadata.name }}",
+	  "resource_kind": "{{ .Resource.kind }}",
+	  "original_item": {{ .Item | toJson }},
+	  "replicas": {{ .Resource.status.replicas }},
+	  "timestamp": "{{ now | date \"2006-01-02T15:04:05Z07:00\" }}"
+	}`,
+					   },
+					   Template: `apiVersion: apps/v1
+	kind: Deployment
+	metadata:
+	  name: {{ .Item.name }}
+	  namespace: default
+	spec:
+	  replicas: {{ .Item.replicas }}
+	  selector:
+		matchLabels:
+		  app: {{ .Item.name }}
+	  template:
+		metadata:
+		  labels:
+			app: {{ .Item.name }}
+		spec:
+		  containers:
+		  - name: nginx
+			image: nginx:1.14.2
+			ports:
+			- containerPort: 80`,
+				   },
+			   }
+			   Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+			   // Wait for the Deployment to be created
+			   deployName := "test-deploy"
+			   deployLookup := types.NamespacedName{Name: deployName, Namespace: ResourceNamespace}
+			   createdDeploy := &appsv1.Deployment{}
+			   Eventually(func(g Gomega) {
+				   err := k8sClient.Get(ctx, deployLookup, createdDeploy)
+				   g.Expect(err).ToNot(HaveOccurred())
+			   }, timeout, interval).Should(Succeed())
+
+			   // Patch the Deployment status to simulate readiness
+			   Eventually(func(g Gomega) {
+				   // Patch status: set status.replicas = 1, status.readyReplicas = 1
+				   patch := []byte(`{"status":{"replicas":1,"readyReplicas":1}}`)
+				   err := k8sClient.Status().Patch(ctx, createdDeploy, client.RawPatch(types.MergePatchType, patch))
+				   g.Expect(err).ToNot(HaveOccurred())
+			   }, timeout, interval).Should(Succeed())
+
+			   // Wait for the status update request to be sent
+			   Eventually(func(g Gomega) {
+				   requests := mockServer.GetRequests()
+				   found := false
+				   for _, req := range requests {
+					   if req.Method == "POST" && strings.Contains(req.URL, "/status-updates") {
+						   // Parse and validate the request body
+						   var body map[string]interface{}
+						   g.Expect(json.Unmarshal([]byte(req.Body), &body)).To(Succeed())
+						   g.Expect(body).To(HaveKeyWithValue("resource_name", deployName))
+						   g.Expect(body).To(HaveKeyWithValue("resource_kind", "Deployment"))
+						   g.Expect(body).To(HaveKey("original_item"))
+						   g.Expect(body).To(HaveKeyWithValue("replicas", float64(1)))
+						   g.Expect(body).To(HaveKey("timestamp"))
+						   found = true
+					   }
+				   }
+				   g.Expect(found).To(BeTrue(), "Should have sent a status update request for the Deployment")
+			   }, timeout, interval).Should(Succeed())
+
+			   // Clean up
+			   Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+		   })
 	})
 
 	Describe("HTTPQueryResource with OAuth2 authentication", func() {
