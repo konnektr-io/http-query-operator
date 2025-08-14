@@ -614,13 +614,124 @@ data:
 			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 		})
 
-		// TODO: Placeholder for error handling test
-		XIt("should handle HTTP errors and update status conditions appropriately", func() {
-			// This test will verify:
-			// - 404, 500, timeout errors are handled gracefully
-			// - Status conditions reflect error states
-			// - Retry behavior works correctly
-		})
+				It("should handle HTTP errors and update status conditions appropriately", func() {
+					ctx := context.Background()
+
+					mockServer := NewMockHTTPServer()
+					defer mockServer.Close()
+
+					// 1. Simulate 404 error
+					mockServer.SetResponse("/error404", MockResponse{
+						StatusCode: 404,
+						Headers:    map[string]string{"Content-Type": "application/json"},
+						Body:       `{"error": "not found"}`,
+					})
+
+					hqr := &httpv1alpha1.HTTPQueryResource{
+						ObjectMeta: metav1.ObjectMeta{
+							Name:      "error-hqr",
+							Namespace: ResourceNamespace,
+						},
+						Spec: httpv1alpha1.HTTPQueryResourceSpec{
+							PollInterval: "2s",
+							HTTP: httpv1alpha1.HTTPSpec{
+								URL:    mockServer.URL() + "/error404",
+								Method: "GET",
+								Headers: map[string]string{
+									"Accept": "application/json",
+								},
+								ResponsePath: "$",
+							},
+							Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: error-cm\n  namespace: default\ndata:\n  error: "true"`,
+						},
+					}
+					Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+					lookupKey := types.NamespacedName{Name: "error-hqr", Namespace: ResourceNamespace}
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						// Should have a Reconciled condition with False and reason containing 404
+						found := false
+						for _, cond := range created.Status.Conditions {
+							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
+								(strings.Contains(cond.Reason, "404") || strings.Contains(cond.Message, "404")) {
+								found = true
+							}
+						}
+						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with 404 error")
+					}, timeout, interval).Should(Succeed())
+
+					// 2. Simulate 500 error
+					mockServer.SetResponse("/error500", MockResponse{
+						StatusCode: 500,
+						Headers:    map[string]string{"Content-Type": "application/json"},
+						Body:       `{"error": "internal server error"}`,
+					})
+					// Patch the resource to point to /error500
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						created.Spec.HTTP.URL = mockServer.URL() + "/error500"
+						g.Expect(k8sClient.Update(ctx, created)).To(Succeed())
+					}, timeout, interval).Should(Succeed())
+
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						found := false
+						for _, cond := range created.Status.Conditions {
+							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
+								(strings.Contains(cond.Reason, "500") || strings.Contains(cond.Message, "500")) {
+								found = true
+							}
+						}
+						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with 500 error")
+					}, timeout, interval).Should(Succeed())
+
+					// 3. Simulate timeout (server does not respond)
+					// We'll use a new path and block the handler
+					blockCh := make(chan struct{})
+					mockServer.SetResponse("/timeout", MockResponse{
+						StatusCode: 200,
+						Headers:    map[string]string{"Content-Type": "application/json"},
+						Body:       `{"ok": true}`,
+					})
+					// Override the handler to block
+					origHandler := mockServer.server.Config.Handler
+					mockServer.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+						if r.URL.Path == "/timeout" {
+							<-blockCh // block forever
+						} else {
+							origHandler.ServeHTTP(w, r)
+						}
+					})
+					// Patch the resource to point to /timeout
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						created.Spec.HTTP.URL = mockServer.URL() + "/timeout"
+						g.Expect(k8sClient.Update(ctx, created)).To(Succeed())
+					}, timeout, interval).Should(Succeed())
+
+					// Wait for a timeout error to be reported
+					Eventually(func(g Gomega) {
+						created := &httpv1alpha1.HTTPQueryResource{}
+						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
+						found := false
+						for _, cond := range created.Status.Conditions {
+							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
+								(strings.Contains(cond.Reason, "timeout") || strings.Contains(cond.Message, "timeout")) {
+								found = true
+							}
+						}
+						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with timeout error")
+					}, timeout*2, interval).Should(Succeed())
+
+					// Clean up
+					close(blockCh)
+					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+				})
 
 		// TODO: Placeholder for template error test
 		XIt("should handle template rendering errors gracefully", func() {
