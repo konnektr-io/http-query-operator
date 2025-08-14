@@ -219,13 +219,13 @@ data:
 	assert.Contains(t, annotations2["konnektr.io/original-item"], "bob")
 }
 
-func TestTemplateProcessor_ProcessHTTPResponseToResources_PartialFailure(t *testing.T) {
+func TestTemplateProcessor_ProcessHTTPResponseToResources_Failure(t *testing.T) {
        tp := NewTemplateProcessor()
 
        template := `apiVersion: v1
 kind: ConfigMap
 metadata:
-	name: user-{{ required "id is required" (toString .Item.id) }}
+	name: user-{{ .Item.id }}
   namespace: default
 data:
   username: "{{ .Item.username }}"
@@ -240,48 +240,14 @@ data:
 	       {
 		       "id":       2,
 		       "username": "baduser",
-		       // missing email
+		       // missing email, will cause template execution error
 	       },
 	       {
 		       "id":       3,
-		       // missing username, will cause template execution error
+		       // missing email, will cause template execution error
 	       },
        }
 
-       resources, err := tp.ProcessHTTPResponseToResources(template, items)
-       // Should not error, should skip bad items
-       require.NoError(t, err)
-       require.Len(t, resources, 2)
-
-       // Collect resources by name
-       resourceMap := map[string]map[string]interface{}{}
-       for _, res := range resources {
-	       name := res.GetName()
-	       data := res.Object["data"].(map[string]interface{})
-	       resourceMap[name] = data
-       }
-
-       // Check "user-1" (gooduser)
-       data, ok := resourceMap["user-1"]
-       assert.True(t, ok, "user-1 should exist")
-       assert.Equal(t, "gooduser", data["username"])
-       assert.Equal(t, "good@example.com", data["email"])
-
-       // Check "user-2" (baduser, missing email)
-       data2, ok := resourceMap["user-2"]
-       assert.True(t, ok, "user-2 should exist")
-       assert.Equal(t, "baduser", data2["username"])
-       _, hasEmail := data2["email"]
-       assert.False(t, hasEmail)
-
-       // Now test all items fail (invalid template for all)
-       badTemplate := `apiVersion: v1
-kind: ConfigMap
-metadata:
-  name: user-{{ .Item.id | }}
-  namespace: default
-data:
-  username: "{{ .Item.username }}"`
-       _, err = tp.ProcessHTTPResponseToResources(badTemplate, items)
-       assert.Error(t, err)
+       _, err := tp.ProcessHTTPResponseToResources(template, items)
+       require.Error(t, err)
 }

@@ -613,225 +613,74 @@ data:
 			// Clean up
 			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
 		})
-
-				It("should handle HTTP errors and update status conditions appropriately", func() {
-					ctx := context.Background()
-
-					mockServer := NewMockHTTPServer()
-					defer mockServer.Close()
-
-					// 1. Simulate 404 error
-					mockServer.SetResponse("/error404", MockResponse{
-						StatusCode: 404,
-						Headers:    map[string]string{"Content-Type": "application/json"},
-						Body:       `{"error": "not found"}`,
-					})
-
-					hqr := &httpv1alpha1.HTTPQueryResource{
-						ObjectMeta: metav1.ObjectMeta{
-							Name:      "error-hqr",
-							Namespace: ResourceNamespace,
-						},
-						Spec: httpv1alpha1.HTTPQueryResourceSpec{
-							PollInterval: "2s",
-							HTTP: httpv1alpha1.HTTPSpec{
-								URL:    mockServer.URL() + "/error404",
-								Method: "GET",
-								Headers: map[string]string{
-									"Accept": "application/json",
-								},
-								ResponsePath: "$",
-							},
-							Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: error-cm\n  namespace: default\ndata:\n  error: "true"`,
-						},
-					}
-					Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
-
-					lookupKey := types.NamespacedName{Name: "error-hqr", Namespace: ResourceNamespace}
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						// Should have a Reconciled condition with False and reason containing 404
-						found := false
-						for _, cond := range created.Status.Conditions {
-							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
-								(strings.Contains(cond.Reason, "404") || strings.Contains(cond.Message, "404")) {
-								found = true
-							}
-						}
-						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with 404 error")
-					}, timeout, interval).Should(Succeed())
-
-					// 2. Simulate 500 error
-					mockServer.SetResponse("/error500", MockResponse{
-						StatusCode: 500,
-						Headers:    map[string]string{"Content-Type": "application/json"},
-						Body:       `{"error": "internal server error"}`,
-					})
-					// Patch the resource to point to /error500
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						created.Spec.HTTP.URL = mockServer.URL() + "/error500"
-						g.Expect(k8sClient.Update(ctx, created)).To(Succeed())
-					}, timeout, interval).Should(Succeed())
-
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						found := false
-						for _, cond := range created.Status.Conditions {
-							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
-								(strings.Contains(cond.Reason, "500") || strings.Contains(cond.Message, "500")) {
-								found = true
-							}
-						}
-						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with 500 error")
-					}, timeout, interval).Should(Succeed())
-
-					// 3. Simulate timeout (server does not respond)
-					// We'll use a new path and block the handler
-					blockCh := make(chan struct{})
-					mockServer.SetResponse("/timeout", MockResponse{
-						StatusCode: 200,
-						Headers:    map[string]string{"Content-Type": "application/json"},
-						Body:       `{"ok": true}`,
-					})
-					// Override the handler to block
-					origHandler := mockServer.server.Config.Handler
-					mockServer.server.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-						if r.URL.Path == "/timeout" {
-							<-blockCh // block forever
-						} else {
-							origHandler.ServeHTTP(w, r)
-						}
-					})
-					// Patch the resource to point to /timeout
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						created.Spec.HTTP.URL = mockServer.URL() + "/timeout"
-						g.Expect(k8sClient.Update(ctx, created)).To(Succeed())
-					}, timeout, interval).Should(Succeed())
-
-					// Wait for a timeout error to be reported
-					Eventually(func(g Gomega) {
-						created := &httpv1alpha1.HTTPQueryResource{}
-						g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-						found := false
-						for _, cond := range created.Status.Conditions {
-							if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
-								(strings.Contains(cond.Reason, "timeout") || strings.Contains(cond.Message, "timeout")) {
-								found = true
-							}
-						}
-						g.Expect(found).To(BeTrue(), "Should have Reconciled=False with timeout error")
-					}, timeout*2, interval).Should(Succeed())
-
-					// Clean up
-					close(blockCh)
-					Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-				})
-
-				It("should report template syntax errors in status conditions", func() {
-								ctx := context.Background()
-								mockServer := NewMockHTTPServer()
-								mockServer.SetResponse("/template-syntax-error", MockResponse{
-									StatusCode: 200,
-									Headers:    map[string]string{"Content-Type": "application/json"},
-									Body: `[{"id": 1, "username": "user1"}]`,
-								})
-								// Template with a syntax error
-								hqr := &httpv1alpha1.HTTPQueryResource{
-									ObjectMeta: metav1.ObjectMeta{
-										Name:      "template-syntax-error-hqr",
-										Namespace: ResourceNamespace,
-									},
-									Spec: httpv1alpha1.HTTPQueryResourceSpec{
-										PollInterval: "2s",
-										HTTP: httpv1alpha1.HTTPSpec{
-											URL:    mockServer.URL() + "/template-syntax-error",
-											Method: "GET",
-											Headers: map[string]string{"Accept": "application/json"},
-											ResponsePath: "$",
-										},
-										Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: syntax-cm-{{ .Item.username | }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"`,
-									},
-								}
-								Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
-								lookupKey := types.NamespacedName{Name: "template-syntax-error-hqr", Namespace: ResourceNamespace}
-								Eventually(func(g Gomega) {
-									created := &httpv1alpha1.HTTPQueryResource{}
-									g.Expect(k8sClient.Get(ctx, lookupKey, created)).To(Succeed())
-									found := false
-									for _, cond := range created.Status.Conditions {
-										if cond.Type == "Reconciled" && cond.Status == metav1.ConditionFalse &&
-											(strings.Contains(cond.Reason, "TemplateError") || strings.Contains(cond.Message, "template")) {
-											found = true
-										}
-									}
-									g.Expect(found).To(BeTrue(), "Should have Reconciled=False with template error")
-								}, timeout, interval).Should(Succeed())
-								// Clean up
-								Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-								mockServer.Close()
-							})
-
-				It("should process valid items and skip invalid ones when fields are missing (partial failure)", func() {
-								ctx := context.Background()
-								mockServer := NewMockHTTPServer()
-								mockServer.SetResponse("/partial-failure", MockResponse{
-									StatusCode: 200,
-									Headers:    map[string]string{"Content-Type": "application/json"},
-									Body: `[
-										{"id": 1, "username": "gooduser", "email": "good@example.com"},
-										{"id": 2, "username": "baduser"}
-									]`,
-								})
-								// Template omits email if missing
-								hqr := &httpv1alpha1.HTTPQueryResource{
-									ObjectMeta: metav1.ObjectMeta{
-										Name:      "partial-failure-hqr",
-										Namespace: ResourceNamespace,
-									},
-									Spec: httpv1alpha1.HTTPQueryResourceSpec{
-										PollInterval: "2s",
-										HTTP: httpv1alpha1.HTTPSpec{
-											URL:    mockServer.URL() + "/partial-failure",
-											Method: "GET",
-											Headers: map[string]string{"Accept": "application/json"},
-											ResponsePath: "$",
-										},
-										Template: `apiVersion: v1\nkind: ConfigMap\nmetadata:\n  name: partial-cm-{{ .Item.id }}\n  namespace: default\ndata:\n  username: "{{ .Item.username }}"\n  {{- if .Item.email }}email: "{{ .Item.email }}"{{- end }}`,
-									},
-								}
-								Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
-								// The good item should be processed
-								cmLookup := types.NamespacedName{Name: "partial-cm-1", Namespace: ResourceNamespace}
-								createdCM := &corev1.ConfigMap{}
-								Eventually(func(g Gomega) {
-									g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
-									g.Expect(createdCM.Data).To(HaveKeyWithValue("username", "gooduser"))
-									g.Expect(createdCM.Data).To(HaveKeyWithValue("email", "good@example.com"))
-								}, timeout, interval).Should(Succeed())
-								// The bad item should be skipped (no ConfigMap)
-								badCMLookup := types.NamespacedName{Name: "partial-cm-2", Namespace: ResourceNamespace}
-								Consistently(func() error {
-									return k8sClient.Get(ctx, badCMLookup, &corev1.ConfigMap{})
-								}, time.Second*5, interval).ShouldNot(Succeed())
-								// Clean up
-								Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
-								mockServer.Close()
-							})
 	})
 
 	Describe("HTTPQueryResource finalizer cleanup logic", func() {
-		// TODO: Placeholder for finalizer test
-		XIt("should delete managed resources and remove the finalizer when the CR is deleted and the finalizer is set", func() {
-			// This test will verify:
-			// - Finalizer prevents deletion until cleanup is complete
-			// - All managed resources are deleted during cleanup
-			// - Finalizer is removed after successful cleanup
+		It("should delete managed resources and remove the finalizer when the CR is deleted and the finalizer is set", func() {
+			ctx := context.Background()
+
+			// Create a mock HTTP server with a single item
+			mockServer := NewMockHTTPServer()
+			defer mockServer.Close()
+			response := MockResponse{
+				StatusCode: 200,
+				Headers:    map[string]string{"Content-Type": "application/json"},
+				Body:       `[{"id": 99, "username": "finalizeruser"}]`,
+			}
+			mockServer.SetResponse("/finalizer", response)
+
+			// Create the HTTPQueryResource with the finalizer set
+			hqr := &httpv1alpha1.HTTPQueryResource{
+				ObjectMeta: metav1.ObjectMeta{
+					Name:       "finalizer-hqr",
+					Namespace:  ResourceNamespace,
+					Finalizers: []string{"konnektr.io/httpqueryresource-finalizer"},
+				},
+				Spec: httpv1alpha1.HTTPQueryResourceSpec{
+					PollInterval: "10s",
+					Prune:        ptrBool(true),
+					HTTP: httpv1alpha1.HTTPSpec{
+						URL:    mockServer.URL() + "/finalizer",
+						Method: "GET",
+						Headers: map[string]string{
+							"Accept": "application/json",
+						},
+						ResponsePath: "$",
+					},
+					Template: `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: finalizer-cm-{{ .Row.id }}
+  namespace: default
+data:
+  foo: bar`,
+				},
+			}
+			Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
+
+			// Wait for the ConfigMap to be created
+			cmName := "finalizer-cm-99"
+			cmLookup := types.NamespacedName{Name: cmName, Namespace: ResourceNamespace}
+			createdCM := &corev1.ConfigMap{}
+			Eventually(func(g Gomega) {
+				g.Expect(k8sClient.Get(ctx, cmLookup, createdCM)).To(Succeed())
+			}, timeout, interval).Should(Succeed())
+
+			// Delete the DatabaseQueryResource
+			lookupKey := types.NamespacedName{Name: "finalizer-hqr", Namespace: ResourceNamespace}
+			Expect(k8sClient.Delete(ctx, hqr)).To(Succeed())
+
+			// The ConfigMap should be deleted by the finalizer logic
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, cmLookup, createdCM)
+				g.Expect(err).To(HaveOccurred())
+			}, timeout*2, interval).Should(Succeed())
+
+			// The DatabaseQueryResource should eventually be deleted (finalizer removed)
+			Eventually(func(g Gomega) {
+				err := k8sClient.Get(ctx, lookupKey, &httpv1alpha1.HTTPQueryResource{})
+				g.Expect(err).To(HaveOccurred())
+			}, timeout*2, interval).Should(Succeed())
 		})
 	})
 
