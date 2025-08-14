@@ -170,7 +170,7 @@ spec:
     # Optional: Authentication
     authenticationRef:
       name: api-credentials
-      type: basic # or "bearer" or "apikey"
+      type: basic # or "bearer" or "apikey" or "oauth2"
       # Optional: Custom key names in the secret
       # usernameKey: "username"
       # passwordKey: "password"
