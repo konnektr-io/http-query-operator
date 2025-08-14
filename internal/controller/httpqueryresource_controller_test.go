@@ -774,12 +774,18 @@ spec:
 				g.Expect(err).ToNot(HaveOccurred())
 			}, timeout, interval).Should(Succeed())
 
-
 			// Patch the Deployment status to simulate readiness
 			createdDeploy.Status.Replicas = 1
 			createdDeploy.Status.ReadyReplicas = 1
 			createdDeploy.Status.AvailableReplicas = 1
 			Expect(k8sClient.Status().Update(ctx, createdDeploy)).To(Succeed())
+
+			// Wait until the Deployment status is actually updated in the API
+			Eventually(func(g Gomega) {
+				updated := &appsv1.Deployment{}
+				g.Expect(k8sClient.Get(ctx, deployLookup, updated)).To(Succeed())
+				g.Expect(updated.Status.AvailableReplicas).To(Equal(int32(1)))
+			}, timeout, interval).Should(Succeed())
 
 			// Wait for the Deployment to become available (ready)
 			Eventually(func(g Gomega) {
