@@ -508,7 +508,6 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		if err != nil {
 			log.Error(err, "Failed to resolve status update authentication configuration")
 			r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "StatusUpdateFailed", "Failed to resolve status update authentication configuration: "+err.Error())
-			_ = r.Status().Update(ctx, httpQueryResource)
 			return err
 		}
 		statusConfig.AuthType = authConfig.AuthType
@@ -565,13 +564,12 @@ func (r *HTTPQueryResourceReconciler) updateStatusForChildResources(ctx context.
 		log.V(1).Info("Successfully sent status update for resource", "resource", resource.GetName())
 	}
 
-	// Set and persist a status condition on the parent CR
+	// Set a status condition on the parent CR (do not persist here)
 	if hadError {
 		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionFalse, "StatusUpdateFailed", "One or more status update callbacks failed")
 	} else {
 		r.setCondition(httpQueryResource, ConditionReconciled, metav1.ConditionTrue, "StatusUpdateSuccess", "All status update callbacks succeeded")
 	}
-	_ = r.Status().Update(ctx, httpQueryResource)
 
 	if hadError {
 		return fmt.Errorf("one or more status update callbacks failed")
