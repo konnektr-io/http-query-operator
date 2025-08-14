@@ -745,23 +745,23 @@ data:
 					   Template: `apiVersion: apps/v1
 kind: Deployment
 metadata:
-	name: {{ .Item.name }}
-	namespace: default
+  name: {{ .Item.name }}
+  namespace: default
 spec:
-	replicas: {{ .Item.replicas }}
-	selector:
-	matchLabels:
-		app: {{ .Item.name }}
-	template:
+  replicas: {{ .Item.replicas }}
+  selector:
+    matchLabels:
+      app: {{ .Item.name }}
+  template:
 	metadata:
-		labels:
+      labels:
 		app: {{ .Item.name }}
 	spec:
-		containers:
-		- name: nginx
-		image: nginx:1.14.2
-		ports:
-		- containerPort: 80`,
+	  containers:
+	  - name: nginx
+	    image: nginx:1.14.2
+	    ports:
+	    - containerPort: 80`,
 				   },
 			   }
 			   Expect(k8sClient.Create(ctx, hqr)).To(Succeed())
